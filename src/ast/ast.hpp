@@ -265,5 +265,35 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+
+class ArrayExpr final : public Expr{
+private:
+    std::vector<ExprPtr> elements_;
+
+public:
+    ArrayExpr(std::vector<ExprPtr> elements) : elements_(std::move(elements)){};
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class ArrayRepeatExpr final : public Expr{
+private:
+    ExprPtr value_;
+    ExprPtr count_;   // 保存次数的常量表达式，后续语义分析再求值
+public:
+    ArrayRepeatExpr(ExprPtr value, ExprPtr count) : value_(std::move(value)), count_(std::move(count)){};
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class IndexExpr final : public Expr{
+private:
+    ExprPtr base_;
+    ExprPtr index_;
+public:
+    IndexExpr(ExprPtr base, ExprPtr index) : base_(std::move(base)), index_(std::move(index)){};
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
 }
 

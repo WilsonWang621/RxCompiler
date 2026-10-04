@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check AST structure only; loop ownership and types belong to semantic analysis.
+"""Check AST structure only; constant values and types belong to semantic analysis.
 
 Run after building: python3 tests/ast/test_expression_builder.py
 Set RX_AST_COMPILER to check another compiler executable.
@@ -44,6 +44,143 @@ class ExpressionBuilderTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         expected = ("Crate", ("Function: main", ("Block", *children)))
         self.assertEqual(result.stdout, dump(expected))
+
+    def check_expression_entries(self, expression, expected):
+        entries = [
+            ("ordinary", "let x = " + expression + ";", ("LetStmt: x", expected)),
+            ("statement", expression + ";", ("ExprStmt:", expected)),
+            ("tail", expression, expected),
+            ("condition", "while " + expression + " {}",
+             ("ExprStmt:", ("WhileExpr", ("Condition:", expected), ("Body:", "Block")))),
+            ("condition_break", "while break " + expression + " {}",
+             ("ExprStmt:", ("WhileExpr", ("Condition:", ("BreakExpr", expected)),
+                            ("Body:", "Block")))),
+        ]
+        for entry, body, tree in entries:
+            with self.subTest(expression=expression, entry=entry):
+                self.check_ast(body, tree)
+
+    def test_array_literals_in_all_entries(self):
+        for expression, expected in [
+            ("[]", "ArrayExpr"),
+            ("[1]", ("ArrayExpr", "IntegerLiteral: 1")),
+            ("[1,]", ("ArrayExpr", "IntegerLiteral: 1")),
+            ("[1, 2,]", ("ArrayExpr", "IntegerLiteral: 1", "IntegerLiteral: 2")),
+            ("[true, false]", ("ArrayExpr", "Boolean: true", "Boolean: false")),
+            ("[1 + 2, x * 3]", ("ArrayExpr",
+                ("BinaryExpr: +", "IntegerLiteral: 1", "IntegerLiteral: 2"),
+                ("BinaryExpr: *", "PathExpr: x", "IntegerLiteral: 3"))),
+        ]:
+            self.check_expression_entries(expression, expected)
+
+    def test_nested_arrays_in_all_entries(self):
+        for expression, expected in [
+            ("[[], []]", ("ArrayExpr", "ArrayExpr", "ArrayExpr")),
+            ("[[1, 2], [3, 4]]", ("ArrayExpr",
+                ("ArrayExpr", "IntegerLiteral: 1", "IntegerLiteral: 2"),
+                ("ArrayExpr", "IntegerLiteral: 3", "IntegerLiteral: 4"))),
+            ("[[0; 3]; 2]", ("ArrayRepeatExpr",
+                ("Value:", ("ArrayRepeatExpr", ("Value:", "IntegerLiteral: 0"),
+                            ("Count:", "IntegerLiteral: 3"))),
+                ("Count:", "IntegerLiteral: 2"))),
+            ("[[[false; 2]; 3]; 4]", ("ArrayRepeatExpr",
+                ("Value:", ("ArrayRepeatExpr",
+                    ("Value:", ("ArrayRepeatExpr", ("Value:", "Boolean: false"),
+                                ("Count:", "IntegerLiteral: 2"))),
+                    ("Count:", "IntegerLiteral: 3"))),
+                ("Count:", "IntegerLiteral: 4"))),
+            ("[[1, 2]; N]", ("ArrayRepeatExpr",
+                ("Value:", ("ArrayExpr", "IntegerLiteral: 1", "IntegerLiteral: 2")),
+                ("Count:", "PathExpr: N"))),
+            ("[[0; N], [1; N]]", ("ArrayExpr",
+                ("ArrayRepeatExpr", ("Value:", "IntegerLiteral: 0"), ("Count:", "PathExpr: N")),
+                ("ArrayRepeatExpr", ("Value:", "IntegerLiteral: 1"), ("Count:", "PathExpr: N")))),
+        ]:
+            self.check_expression_entries(expression, expected)
+
+    def test_repeat_counts_preserve_constant_expression(self):
+        # Negative, boolean and unresolved counts remain AST nodes for later
+        # semantic checks; this suite does not claim they are valid lengths.
+        for count, expected in [
+            ("0", "IntegerLiteral: 0"),
+            ("3", "IntegerLiteral: 3"),
+            ("N", "PathExpr: N"),
+            ("((3))", "IntegerLiteral: 3"),
+            ("((N))", "PathExpr: N"),
+            ("-3", ("UnaryExpr: -", "IntegerLiteral: 3")),
+            ("-N", ("UnaryExpr: -", "PathExpr: N")),
+            ("-((3))", ("UnaryExpr: -", "IntegerLiteral: 3")),
+            ("-((N))", ("UnaryExpr: -", "PathExpr: N")),
+            ("(-((3)))", ("UnaryExpr: -", "IntegerLiteral: 3")),
+            ("true", "Boolean: true"),
+            ("((false))", "Boolean: false"),
+            ("18446744073709551616", "IntegerLiteral: 18446744073709551616"),
+        ]:
+            self.check_expression_entries("[x; " + count + "]",
+                ("ArrayRepeatExpr", ("Value:", "PathExpr: x"), ("Count:", expected)))
+
+    def test_indexing_in_all_entries(self):
+        for expression, expected in [
+            ("a[i]", ("IndexExpr", ("Base:", "PathExpr: a"), ("Index:", "PathExpr: i"))),
+            ("a[i][j]", ("IndexExpr",
+                ("Base:", ("IndexExpr", ("Base:", "PathExpr: a"), ("Index:", "PathExpr: i"))),
+                ("Index:", "PathExpr: j"))),
+            ("[1, 2][0]", ("IndexExpr",
+                ("Base:", ("ArrayExpr", "IntegerLiteral: 1", "IntegerLiteral: 2")),
+                ("Index:", "IntegerLiteral: 0"))),
+            ("[0; N][i]", ("IndexExpr",
+                ("Base:", ("ArrayRepeatExpr", ("Value:", "IntegerLiteral: 0"),
+                           ("Count:", "PathExpr: N"))),
+                ("Index:", "PathExpr: i"))),
+            ("a[1 + 2 * 3]", ("IndexExpr", ("Base:", "PathExpr: a"),
+                ("Index:", ("BinaryExpr: +", "IntegerLiteral: 1",
+                            ("BinaryExpr: *", "IntegerLiteral: 2", "IntegerLiteral: 3"))))),
+            ("a[b[i]]", ("IndexExpr", ("Base:", "PathExpr: a"),
+                ("Index:", ("IndexExpr", ("Base:", "PathExpr: b"), ("Index:", "PathExpr: i"))))),
+            ("-a[i]", ("UnaryExpr: -",
+                ("IndexExpr", ("Base:", "PathExpr: a"), ("Index:", "PathExpr: i")))),
+        ]:
+            self.check_expression_entries(expression, expected)
+
+    def test_index_assignment_and_precedence(self):
+        first = ("IndexExpr", ("Base:", "PathExpr: a"), ("Index:", "IntegerLiteral: 0"))
+        second = ("IndexExpr", ("Base:", "PathExpr: b"), ("Index:", "IntegerLiteral: 1"))
+        self.check_expression_entries("a[0] = b[1] = 2",
+            ("AssignExpr", first, ("AssignExpr", second, "IntegerLiteral: 2")))
+        self.check_expression_entries("a[0] + b[1] * 3 < 10",
+            ("BinaryExpr: <", ("BinaryExpr: +", first,
+                              ("BinaryExpr: *", second, "IntegerLiteral: 3")),
+             "IntegerLiteral: 10"))
+        self.check_ast("if a[0] {}", ("ExprStmt:", ("IfExpr", ("Condition:", first),
+                      ("Then:", "Block"), "Else: <none>")))
+
+    def test_integer_literals_have_consistent_support(self):
+        diagnostic = "error: only unsuffixed decimal integer literals are supported for now\n"
+        for literal in ["0x10", "0b10", "0o10", "1_000", "3usize"]:
+            for expression in [literal, "[0; " + literal + "]", "[0; -(" + literal + ")]"]:
+                with self.subTest(expression=expression):
+                    result = self.compile("fn main() { let x = " + expression + "; }")
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(result.stderr, diagnostic)
+
+    def test_malformed_arrays_and_indices_rejected(self):
+        for expression in ["[; 3]", "[1;]", "[1;; 2]", "[1; 2,]", "[1 2]",
+                           "[1; N + 1]", "[1; -true]", "[1; --3]",
+                           "a[]", "a[1, 2]", "a[0", "a[;]"]:
+            with self.subTest(expression=expression):
+                result = self.compile("fn main() { let x = " + expression + "; }")
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn(": error:", result.stderr)
+
+    def test_calls_and_member_access_remain_unsupported(self):
+        for expression in ["f()", "a.field", "a.method()", "a[i]()", "a[i].field"]:
+            for body in ["let x = " + expression + ";", expression + ";",
+                         "while " + expression + " {}", "while break " + expression + " {}"]:
+                with self.subTest(expression=expression, body=body):
+                    result = self.compile("fn main() { " + body + " }")
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertIn("not supported yet", result.stderr)
 
     def test_precedence_and_associativity_in_all_entries(self):
         cases = [

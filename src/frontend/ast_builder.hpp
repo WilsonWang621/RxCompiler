@@ -23,6 +23,15 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildLiteral(rx::Parser::LiteralExpressionContext *ctx);
 
+    // 根据分号区分 [a, b, ...] 和 [value; count]，共用一个数组入口。
+    ast::ExprPtr buildArray(rx::Parser::ArrayExpressionContext *ctx);
+
+    // 保存数组重复次数的常量表达式，具体数值留给语义分析求出。
+    ast::ExprPtr buildConstValue(rx::Parser::ConstValueContext *ctx);
+
+    // constValue 中负号后的字面量、路径或括号内容。
+    ast::ExprPtr buildMagnitude(rx::Parser::MagnitudeContext *ctx);
+
     //1.2
     ast::ExprPtr buildAdditive(rx::Parser::AdditiveExpressionContext *ctx);
 
@@ -33,6 +42,9 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildUnary(rx::Parser::UnaryExpressionContext *ctx);
 
     ast::ExprPtr buildPostfix(rx::Parser::PostfixExpressionContext *ctx);
+
+    // 各表达式入口共用后缀构建，将下标等操作包装到已有的 base 节点上。
+    ast::ExprPtr buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx);
 
     ast::ExprPtr buildPrimary(rx::Parser::PrimaryExpressionContext *ctx);
 

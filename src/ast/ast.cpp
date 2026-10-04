@@ -221,5 +221,40 @@ namespace rx::ast{
             out << "<no value>\n";
         }
     }
+
+    void ArrayExpr::dump(std::ostream &out, int indent) const{
+        printIndent(out, indent);
+        out << "ArrayExpr\n";
+
+        for(const auto &element : elements_){
+            element->dump(out, indent + 1);
+        }
+    }
+
+    void ArrayRepeatExpr::dump(std::ostream &out, int indent) const{
+        printIndent(out, indent);
+        out << "ArrayRepeatExpr\n";
+
+        printIndent(out, indent + 1);
+        out << "Value:\n";
+        value_->dump(out, indent + 2);
+
+        printIndent(out, indent + 1);
+        out << "Count:\n";
+        count_->dump(out, indent + 2);
+    }
+
+    void IndexExpr::dump(std::ostream &out, int indent) const{
+        printIndent(out, indent);
+        out << "IndexExpr\n";
+
+        printIndent(out, indent + 1);
+        out << "Base:\n";
+        base_->dump(out, indent + 2);
+
+        printIndent(out, indent + 1);
+        out << "Index:\n";
+        index_->dump(out, indent + 2);
+    }
 }
 

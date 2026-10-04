@@ -13,6 +13,21 @@ void requireSingleChild(antlr4::ParserRuleContext *ctx) {
     }
 }
 
+// 字面量、常量次数和负号操作数共用相同的整数支持范围。
+rx::ast::ExprPtr buildIntegerLiteral(antlr4::tree::TerminalNode *integer) {
+    std::string text = integer->getText();
+
+    // 本次仅支持由十进制数字组成的字面量。
+    // 暂不处理进制前缀、下划线和类型后缀。
+    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
+        throw std::runtime_error(
+            "only unsuffixed decimal integer literals are supported for now"
+        );
+    }
+
+    return std::make_unique<rx::ast::IntegerLiteralExpr>(std::move(text));
+}
+
 // 优先级已由解析树确定；这里只把同一层的左结合运算依次折叠成 BinaryExpr。
 // 各入口通过 buildRight 指定后续操作数的构建方式，包括 closed 的最后一项。
 template<class OperatorContext, class BuildRight>
@@ -172,9 +187,9 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
 ast::ExprPtr ASTBuilder::buildExpression(rx::Parser::ExpressionContext *ctx){
     auto assignment = ctx->assignmentExpression();
     return buildAssignment(
-        buildLogicalOr(assignment->logicalOrExpression()),
-        assignment->assignmentOperator(),
-        [&]{
+        buildLogicalOr(assignment->logicalOrExpression()),  //left
+        assignment->assignmentOperator(),                   //op
+        [&]{                                                //buildright
             return buildExpression(assignment->expression());
         }
     );
@@ -189,24 +204,77 @@ ast::ExprPtr ASTBuilder::buildLiteral(rx::Parser::LiteralExpressionContext *ctx)
 
     auto integer = ctx->INTEGER_LITERAL();
     if(integer != nullptr){
-        std::string text = integer->getText();
-
-        // 本次仅支持由十进制数字组成的字面量。
-        // 暂不处理进制前缀、下划线和类型后缀。
-        if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
-            throw std::runtime_error(
-                "only unsuffixed decimal integer literals are supported for now"
-            );
-        }
-
-        return std::make_unique<ast::IntegerLiteralExpr>(
-            std::move(text)
-        );
+        return buildIntegerLiteral(integer);
     }
 
     throw std::runtime_error(
         "only integer and boolean literals are supported for now"
     );
+}
+
+ast::ExprPtr ASTBuilder::buildArray(rx::Parser::ArrayExpressionContext *ctx){
+    if(ctx->SEMI() != nullptr){
+        auto value = buildExpression(ctx->expression(0));
+        auto count = buildConstValue(ctx->constValue());
+        return std::make_unique<ast::ArrayRepeatExpr>(
+            std::move(value),
+            std::move(count)
+        );
+    }
+
+    // [a, b, ...]，也包含空数组 []
+    std::vector<ast::ExprPtr> elements;
+    for (auto *elementCtx : ctx->expression()) {
+        elements.push_back(buildExpression(elementCtx));
+    }
+
+    return std::make_unique<ast::ArrayExpr>(
+        std::move(elements)
+    );
+}
+
+ast::ExprPtr ASTBuilder::buildConstValue(rx::Parser::ConstValueContext *ctx){
+    if (ctx->MINUS() != nullptr) {
+        auto operand = buildMagnitude(ctx->magnitude());
+
+        return std::make_unique<ast::UnaryExpr>(
+            "-",
+            std::move(operand)
+        );
+    }
+
+    if(ctx->pathInExpression() != nullptr){ //用现成的build函数，不要试图自己重写
+        // return std::make_unique<ast::PathExpr>(
+        //     std::move(ctx->pathInExpression()->pathExprSegment());
+        // )
+        return buildPath(ctx->pathInExpression());
+    }
+    if(ctx->INTEGER_LITERAL() != nullptr){
+        return buildIntegerLiteral(ctx->INTEGER_LITERAL());
+    }
+    if(ctx->TRUE() != nullptr || ctx->FALSE() != nullptr){
+        return std::make_unique<ast::BooleanLiteralExpr>(ctx->TRUE() != nullptr);
+    }
+    if(ctx->LPAREN() != nullptr){
+        return buildConstValue(ctx->constValue());
+    }
+    throw std::runtime_error{"this type of constvalue about array size is not supported"};
+}
+
+ast::ExprPtr ASTBuilder::buildMagnitude(rx::Parser::MagnitudeContext *ctx){
+    if(ctx->INTEGER_LITERAL() != nullptr){
+        return buildIntegerLiteral(ctx->INTEGER_LITERAL());
+    }
+
+    if(ctx->pathInExpression() != nullptr){
+        return buildPath(ctx->pathInExpression());
+    }
+
+    if(ctx->LPAREN() != nullptr){
+        return buildMagnitude(ctx->magnitude());
+    }
+
+    throw std::runtime_error{"this magnitude is not supported yet"};
 }
 
 ast::ExprPtr ASTBuilder::buildAdditive(rx::Parser::AdditiveExpressionContext *ctx){
@@ -263,11 +331,23 @@ ast::ExprPtr ASTBuilder::buildUnary(rx::Parser::UnaryExpressionContext *ctx){
 }
 
 ast::ExprPtr ASTBuilder::buildPostfix(rx::Parser::PostfixExpressionContext *ctx){
-    if(!ctx->postfixSuffix().empty()){
-        throw std::runtime_error{"postfix operations are not supported yet"};
+    auto result = buildPrimary(ctx->primaryExpression());
+    for (auto *suffix : ctx->postfixSuffix()) {
+        result = buildPostfixSuffix(std::move(result), suffix);
+    }
+    return result;
+}
+
+ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx){
+    if(ctx->LBRACKET() != nullptr){
+        auto index = buildExpression(ctx->expression());
+        return std::make_unique<ast::IndexExpr>(
+            std::move(base),
+            std::move(index)
+        );
     }
 
-    return buildPrimary(ctx->primaryExpression());
+    throw std::runtime_error{"this post suffix is not supported yet"};
 }
 
 ast::ExprPtr ASTBuilder::buildPrimary(rx::Parser::PrimaryExpressionContext *ctx) {
@@ -394,14 +474,17 @@ ast::ExprPtr ASTBuilder::buildStatementUnary(rx::Parser::StatementUnaryExpressio
 
 ast::ExprPtr ASTBuilder::buildStatementPostfix(rx::Parser::StatementPostfixExpressionContext *ctx) {
     if (ctx->expressionWithBlock() != nullptr ||
-        ctx->dotSuffix() != nullptr ||
-        !ctx->postfixSuffix().empty()) {
+        ctx->dotSuffix() != nullptr) {
         throw std::runtime_error(
             "block-leading or postfix expressions are not supported yet"
         );
     }
 
-    return buildNonBlockPrimary(ctx->nonBlockPrimary());
+    auto result = buildNonBlockPrimary(ctx->nonBlockPrimary());
+    for (auto *suffix : ctx->postfixSuffix()) {
+        result = buildPostfixSuffix(std::move(result), suffix);
+    }
+    return result;
 }
 
 ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext *ctx){
@@ -423,6 +506,10 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
         }
 
         return buildPath(ctx->pathInExpression());
+    }
+    //对于高维数组，又会跳回到buildArray重新构建里层的低维数组  一直递归下去
+    if (ctx->arrayExpression() != nullptr) {
+        return buildArray(ctx->arrayExpression());
     }
 
     // 语句入口也会走到这里，由 buildStatement 在外层包装 ExprStmt。
@@ -910,10 +997,11 @@ ast::ExprPtr ASTBuilder::buildConditionUnary(rx::Parser::ConditionUnaryExpressio
 }
 
 ast::ExprPtr ASTBuilder::buildConditionPostfix(rx::Parser::ConditionPostfixExpressionContext *ctx){
-    if(!ctx->postfixSuffix().empty()){
-        throw std::runtime_error{"postfix operations are not supported yet"};
+    auto result = buildConditionPrimary(ctx->conditionPrimary());
+    for (auto *suffix : ctx->postfixSuffix()) {
+        result = buildPostfixSuffix(std::move(result), suffix);
     }
-    return buildConditionPrimary(ctx->conditionPrimary());
+    return result;
 }
 
 ast::ExprPtr ASTBuilder::buildConditionPrimary(rx::Parser::ConditionPrimaryContext *ctx){
@@ -936,6 +1024,9 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
     }
     if(ctx->pathInExpression() != nullptr){
         return buildPath(ctx->pathInExpression());
+    }
+    if(ctx->arrayExpression() != nullptr){
+        return buildArray(ctx->arrayExpression());
     }
     if(ctx->LPAREN() != nullptr){
         if(ctx->expression() == nullptr){
@@ -1159,10 +1250,11 @@ ast::ExprPtr ASTBuilder::buildConditionBreakUnary(rx::Parser::ConditionBreakUnar
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakPostfix(rx::Parser::ConditionBreakPostfixExpressionContext *ctx){
-    if(!ctx->postfixSuffix().empty()){
-        throw std::runtime_error{"postfix operations are not supported yet"};
+    auto result = buildConditionPrimaryWithoutBareBlock(ctx->conditionPrimaryWithoutBareBlock());
+    for (auto *suffix : ctx->postfixSuffix()) {
+        result = buildPostfixSuffix(std::move(result), suffix);
     }
-    return buildConditionPrimaryWithoutBareBlock(ctx->conditionPrimaryWithoutBareBlock());
+    return result;
 }
 
 ast::ExprPtr ASTBuilder::buildIf(rx::Parser::IfExpressionContext *ctx){
