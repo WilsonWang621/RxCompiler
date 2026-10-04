@@ -41,6 +41,9 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildCast(rx::Parser::CastExpressionContext *ctx);
 
+    // 连续 as 左结合；目标类型共用类型构建入口。
+    ast::ExprPtr buildCastChain(ast::ExprPtr value, const std::vector<rx::Parser::TypeRefContext*> &types);
+
     ast::ExprPtr buildUnary(rx::Parser::UnaryExpressionContext *ctx);
 
     ast::ExprPtr buildPostfix(rx::Parser::PostfixExpressionContext *ctx);
@@ -78,6 +81,10 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildBitAnd(rx::Parser::BitAndExpressionContext *ctx);
 
     ast::ExprPtr buildShift(rx::Parser::ShiftExpressionContext *ctx);
+
+    // 移位规则混合普通和 closed 操作数，必须按解析树中的源码顺序构建。
+    ast::ExprPtr buildShiftChain(antlr4::ParserRuleContext *ctx);
+    ast::ExprPtr buildShiftOperand(antlr4::tree::ParseTree *ctx);
 
     //The "closed" prefix: handles ambiguity between < and generic parameters
     ast::ExprPtr buildClosedBitOr(rx::Parser::ClosedBitOrExpressionContext *ctx);
@@ -226,6 +233,8 @@ class ASTBuilder final : public ParserBaseVisitor{
     std::unique_ptr<ast::FunctionParam> buildNamedParam(rx::Parser::FunctionParamContext *ctx);
 
     std::unique_ptr<ast::TypeRef> buildTypeRef(rx::Parser::TypeRefContext *ctx);
+
+    std::unique_ptr<ast::TypeRef> buildClosedCastType(rx::Parser::ClosedCastTypeContext *ctx);
 
     // [T; N] 的 T 走类型入口，N 走常量表达式入口。
     std::unique_ptr<ast::ArrayTypeRef> buildArrayType(rx::Parser::ArrayTypeContext *ctx);

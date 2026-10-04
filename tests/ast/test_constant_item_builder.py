@@ -97,9 +97,9 @@ class ConstantItemBuilderTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertIn(": error:", result.stderr)
 
-    def test_unsupported_type_and_item_forms_remain_diagnostic(self):
+    def test_unsupported_item_forms_remain_diagnostic(self):
         for source, diagnostic in [
-            ("const N: &i32 = OTHER;", "this type form is not supported yet"),
+            ("use other;", "this item form is not supported yet"),
             ("struct S {}", "this item form is not supported yet"),
         ]:
             with self.subTest(source=source):

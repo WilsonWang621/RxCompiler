@@ -4,15 +4,6 @@
 
 namespace {
 
-// 本次只允许穿过单孩子的表达式规则。
-void requireSingleChild(antlr4::ParserRuleContext *ctx) {
-    if (ctx == nullptr || ctx->children.size() != 1) {
-        throw std::runtime_error(
-           "this expression form is not supported yet"
-        );
-    }
-}
-
 // Lexer 已验证进制、下划线和类型后缀；各表达式入口共用节点构建。
 rx::ast::ExprPtr buildIntegerLiteral(antlr4::tree::TerminalNode *integer) {
     // 保留完整原文，后续语义分析再按进制求值并处理类型后缀及范围。
@@ -58,15 +49,46 @@ rx::ast::ExprPtr buildAssignment(rx::ast::ExprPtr left, rx::Parser::AssignmentOp
     if(op == nullptr){
         return left;
     }
-    if(op->equalsSign() == nullptr){
-        throw std::runtime_error{"compound assignment is not supported yet"};
-    }
-
     auto right = buildRight();
+    if (op->equalsSign() == nullptr) {
+        return std::make_unique<rx::ast::CompoundAssignExpr>(
+            op->getText(), std::move(left), std::move(right)
+        );
+    }
     return std::make_unique<rx::ast::AssignExpr>(
         std::move(left),
         std::move(right)
     );
+}
+
+rx::ast::ExprPtr buildUnaryOperator(rx::Parser::UnaryOperatorContext *ctx, rx::ast::ExprPtr operand) {
+    if (ctx->AMP() != nullptr || ctx->ANDAND() != nullptr) {
+        operand = std::make_unique<rx::ast::UnaryExpr>(
+            ctx->MUT() != nullptr ? "&mut" : "&", std::move(operand)
+        );
+        // &&mut x 等价于 &(&mut x)，mut 只属于内层借用。
+        if (ctx->ANDAND() != nullptr) {
+            operand = std::make_unique<rx::ast::UnaryExpr>("&", std::move(operand));
+        }
+        return operand;
+    }
+    return std::make_unique<rx::ast::UnaryExpr>(ctx->getText(), std::move(operand));
+}
+
+template<class Context>
+std::unique_ptr<rx::ast::TypeRef> buildReferenceType(Context *ctx, std::unique_ptr<rx::ast::TypeRef> referent) {
+    std::optional<std::string> lifetime;
+    if (ctx->lifetime() != nullptr) {
+        lifetime = ctx->lifetime()->getText();
+    }
+    referent = std::make_unique<rx::ast::ReferenceTypeRef>(
+        std::move(referent), ctx->MUT() != nullptr, std::move(lifetime)
+    );
+    // 类型中的 && 同样表示两层引用，生命周期与 mut 只属于内层。
+    if (ctx->ANDAND() != nullptr) {
+        referent = std::make_unique<rx::ast::ReferenceTypeRef>(std::move(referent), false);
+    }
+    return referent;
 }
 
 } // namespace
@@ -311,32 +333,21 @@ ast::ExprPtr ASTBuilder::buildMultiplicative(rx::Parser::MultiplicativeExpressio
 }
 
 ast::ExprPtr ASTBuilder::buildCast(rx::Parser::CastExpressionContext *ctx) {
-    if (!ctx->typeRef().empty()) {
-        throw std::runtime_error("as casts are not supported yet");
-    }
+    return buildCastChain(buildUnary(ctx->unaryExpression()), ctx->typeRef());
+}
 
-    return buildUnary(ctx->unaryExpression());
+ast::ExprPtr ASTBuilder::buildCastChain(ast::ExprPtr value, const std::vector<rx::Parser::TypeRefContext*> &types) {
+    for (auto *type : types) {
+        value = std::make_unique<ast::CastExpr>(std::move(value), buildTypeRef(type));
+    }
+    return value;
 }
 
 ast::ExprPtr ASTBuilder::buildUnary(rx::Parser::UnaryExpressionContext *ctx){
-    //two branches 1)has prefix operator, build recursively  2) otherwise give it to next floor postfixExpression directly
-    if(ctx->unaryOperator() != nullptr){
-        std::string op = ctx->unaryOperator()->getText();
-
-        // std::cerr << op << '\n';
-
-        // 本次支持取负和取反。
-        // 解引用、借用等操作留到后面。
-        if(op != "-" && op != "!"){
-            throw std::runtime_error{"this unary is not supported yet"};
-        }
-
+    if (ctx->unaryOperator() != nullptr) {
+        // 递归先构建内层，使前缀运算从右向左嵌套。
         auto operand = buildUnary(ctx->unaryExpression());
-
-        return std::make_unique<ast::UnaryExpr>(
-            std::move(op),
-            std::move(operand)
-        );
+        return buildUnaryOperator(ctx->unaryOperator(), std::move(operand));
     }
     return buildPostfix(ctx->postfixExpression());
 }
@@ -461,37 +472,16 @@ ast::ExprPtr ASTBuilder::buildStatementMultiplicative(rx::Parser::StatementMulti
 }
 
 ast::ExprPtr ASTBuilder::buildStatementCast(rx::Parser::StatementCastExpressionContext *ctx) {
-    if (!ctx->typeRef().empty()) {
-        throw std::runtime_error(
-            "as casts are not supported yet"
-        );
-    }
-
-    return buildStatementUnary(ctx->statementUnaryExpression());
+    return buildCastChain(buildStatementUnary(ctx->statementUnaryExpression()), ctx->typeRef());
 }
 
 ast::ExprPtr ASTBuilder::buildStatementUnary(rx::Parser::StatementUnaryExpressionContext *ctx) {
     if (ctx->unaryOperator() != nullptr) {
-        std::string op = ctx->unaryOperator()->getText();
-
-        if (op != "-" && op != "!") {
-            throw std::runtime_error(
-                "this unary operator is not supported yet"
-            );
-        }
-
-        // 语法规定：前缀运算符后面使用普通 unaryExpression。
+        // 前缀运算符后的操作数使用语法规定的普通表达式规则。
         auto operand = buildUnary(ctx->unaryExpression());
-
-        return std::make_unique<ast::UnaryExpr>(
-            std::move(op),
-            std::move(operand)
-        );
+        return buildUnaryOperator(ctx->unaryOperator(), std::move(operand));
     }
-
-    return buildStatementPostfix(
-        ctx->statementPostfixExpression()
-    );
+    return buildStatementPostfix(ctx->statementPostfixExpression());
 }
 
 ast::ExprPtr ASTBuilder::buildStatementPostfix(rx::Parser::StatementPostfixExpressionContext *ctx) {
@@ -593,43 +583,136 @@ ast::ExprPtr ASTBuilder::buildConditionExpression(rx::Parser::ConditionExpressio
 }
 
 ast::ExprPtr ASTBuilder::buildBitOr(rx::Parser::BitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildBitXor(ctx->bitXorExpression(0));
+    auto operands = ctx->bitXorExpression();
+    return buildBinaryChain(
+        buildBitXor(operands[0]),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            return buildBitXor(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildBitXor(rx::Parser::BitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildBitAnd(ctx->bitAndExpression(0));
+    auto operands = ctx->bitAndExpression();
+    return buildBinaryChain(
+        buildBitAnd(operands[0]),
+        ctx->CARET(),
+        [&](std::size_t i){
+            return buildBitAnd(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildBitAnd(rx::Parser::BitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildShift(ctx->shiftExpression(0));
+    auto operands = ctx->shiftExpression();
+    return buildBinaryChain(
+        buildShift(operands[0]),
+        ctx->AMP(),
+        [&](std::size_t i){
+            return buildShift(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildShift(rx::Parser::ShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildAdditive(ctx->additiveExpression(0));
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildClosedBitOr(rx::Parser::ClosedBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildClosedBitXor(ctx->closedBitXorExpression());
+    auto operands = ctx->bitXorExpression();
+    if (operands.empty()) {
+        return buildClosedBitXor(ctx->closedBitXorExpression());
+    }
+    return buildBinaryChain(
+        buildBitXor(operands[0]),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            if (i + 1 < operands.size()) {
+                return buildBitXor(operands[i + 1]);
+            }
+            return buildClosedBitXor(ctx->closedBitXorExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildClosedBitXor(rx::Parser::ClosedBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildClosedBitAnd(ctx->closedBitAndExpression());
+    auto operands = ctx->bitAndExpression();
+    if (operands.empty()) {
+        return buildClosedBitAnd(ctx->closedBitAndExpression());
+    }
+    return buildBinaryChain(
+        buildBitAnd(operands[0]),
+        ctx->CARET(),
+        [&](std::size_t i){
+            if (i + 1 < operands.size()) {
+                return buildBitAnd(operands[i + 1]);
+            }
+            return buildClosedBitAnd(ctx->closedBitAndExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildClosedBitAnd(rx::Parser::ClosedBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildClosedShift(ctx->closedShiftExpression());
+    auto operands = ctx->shiftExpression();
+    if (operands.empty()) {
+        return buildClosedShift(ctx->closedShiftExpression());
+    }
+    return buildBinaryChain(
+        buildShift(operands[0]),
+        ctx->AMP(),
+        [&](std::size_t i){
+            if (i + 1 < operands.size()) {
+                return buildShift(operands[i + 1]);
+            }
+            return buildClosedShift(ctx->closedShiftExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildClosedShift(rx::Parser::ClosedShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildClosedAdditive(ctx->closedAdditiveExpression(0));
+    return buildShiftChain(ctx);
+}
+
+ast::ExprPtr ASTBuilder::buildShiftChain(antlr4::ParserRuleContext *ctx) {
+    // << 前使用 closedAdditive，>> 前使用 additive；分开取两个向量会丢失交错顺序。
+    // 此规则的孩子按“操作数、运算符、操作数”排列，shiftRight 的 getText() 为 >>。
+    auto result = buildShiftOperand(ctx->children[0]);
+    for (std::size_t i = 1; i < ctx->children.size(); i += 2) {
+        auto right = buildShiftOperand(ctx->children[i + 1]);
+        result = std::make_unique<ast::BinaryExpr>(
+            ctx->children[i]->getText(), std::move(result), std::move(right)
+        );
+    }
+    return result;
+}
+
+ast::ExprPtr ASTBuilder::buildShiftOperand(antlr4::tree::ParseTree *ctx) {
+    if (auto *operand = dynamic_cast<rx::Parser::AdditiveExpressionContext*>(ctx)) {
+        return buildAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::ClosedAdditiveExpressionContext*>(ctx)) {
+        return buildClosedAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::StatementAdditiveExpressionContext*>(ctx)) {
+        return buildStatementAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::StatementClosedAdditiveExpressionContext*>(ctx)) {
+        return buildStatementClosedAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::ConditionAdditiveExpressionContext*>(ctx)) {
+        return buildConditionAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::ConditionClosedAdditiveExpressionContext*>(ctx)) {
+        return buildConditionClosedAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::ConditionBreakAdditiveExpressionContext*>(ctx)) {
+        return buildConditionBreakAdditive(operand);
+    }
+    if (auto *operand = dynamic_cast<rx::Parser::ConditionBreakClosedAdditiveExpressionContext*>(ctx)) {
+        return buildConditionBreakClosedAdditive(operand);
+    }
+    throw std::logic_error{"unexpected operand in shift expression"};
 }
 
 ast::ExprPtr ASTBuilder::buildLogicalOr(rx::Parser::LogicalOrExpressionContext *ctx){
@@ -711,51 +794,109 @@ ast::ExprPtr ASTBuilder::buildClosedMultiplicative(rx::Parser::ClosedMultiplicat
 }
 
 ast::ExprPtr ASTBuilder::buildClosedCast(rx::Parser::ClosedCastExpressionContext *ctx){
-    if(ctx->unaryExpression() == nullptr){
-        throw std::runtime_error{"as casts are not supported yet"};
+    if (ctx->unaryExpression() != nullptr) {
+        return buildUnary(ctx->unaryExpression());
     }
-    return buildUnary(ctx->unaryExpression());
+    return std::make_unique<ast::CastExpr>(
+        buildCast(ctx->castExpression()),
+        buildClosedCastType(ctx->closedCastType())
+    );
 }
 
 //statement prefix: The expression that enters from the beginning of the statement.
 ast::ExprPtr ASTBuilder::buildStatementBitOr(rx::Parser::StatementBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementBitXor(ctx->statementBitXorExpression());
+    auto operands = ctx->bitXorExpression();
+    return buildBinaryChain(
+        buildStatementBitXor(ctx->statementBitXorExpression()),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            return buildBitXor(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementBitXor(rx::Parser::StatementBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementBitAnd(ctx->statementBitAndExpression());
+    auto operands = ctx->bitAndExpression();
+    return buildBinaryChain(
+        buildStatementBitAnd(ctx->statementBitAndExpression()),
+        ctx->CARET(),
+        [&](std::size_t i){
+            return buildBitAnd(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementBitAnd(rx::Parser::StatementBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementShift(ctx->statementShiftExpression());
+    auto operands = ctx->shiftExpression();
+    return buildBinaryChain(
+        buildStatementShift(ctx->statementShiftExpression()),
+        ctx->AMP(),
+        [&](std::size_t i){
+            return buildShift(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementShift(rx::Parser::StatementShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementAdditive(ctx->statementAdditiveExpression());
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedBitOr(rx::Parser::StatementClosedBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementClosedBitXor(ctx->statementClosedBitXorExpression());
+    if (ctx->statementClosedBitXorExpression() != nullptr) {
+        return buildStatementClosedBitXor(ctx->statementClosedBitXorExpression());
+    }
+
+    auto operands = ctx->bitXorExpression();
+    return buildBinaryChain(
+        buildStatementBitXor(ctx->statementBitXorExpression()),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            if (i < operands.size()) {
+                return buildBitXor(operands[i]);
+            }
+            return buildClosedBitXor(ctx->closedBitXorExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedBitXor(rx::Parser::StatementClosedBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementClosedBitAnd(ctx->statementClosedBitAndExpression());
+    if (ctx->statementClosedBitAndExpression() != nullptr) {
+        return buildStatementClosedBitAnd(ctx->statementClosedBitAndExpression());
+    }
+
+    auto operands = ctx->bitAndExpression();
+    return buildBinaryChain(
+        buildStatementBitAnd(ctx->statementBitAndExpression()),
+        ctx->CARET(),
+        [&](std::size_t i){
+            if (i < operands.size()) {
+                return buildBitAnd(operands[i]);
+            }
+            return buildClosedBitAnd(ctx->closedBitAndExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedBitAnd(rx::Parser::StatementClosedBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementClosedShift(ctx->statementClosedShiftExpression());
+    if (ctx->statementClosedShiftExpression() != nullptr) {
+        return buildStatementClosedShift(ctx->statementClosedShiftExpression());
+    }
+
+    auto operands = ctx->shiftExpression();
+    return buildBinaryChain(
+        buildStatementShift(ctx->statementShiftExpression()),
+        ctx->AMP(),
+        [&](std::size_t i){
+            if (i < operands.size()) {
+                return buildShift(operands[i]);
+            }
+            return buildClosedShift(ctx->closedShiftExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedShift(rx::Parser::StatementClosedShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildStatementClosedAdditive(ctx->statementClosedAdditiveExpression());
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildStatementLogicalOr(rx::Parser::StatementLogicalOrExpressionContext *ctx){
@@ -839,30 +980,50 @@ ast::ExprPtr ASTBuilder::buildStatementClosedMultiplicative(rx::Parser::Statemen
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedCast(rx::Parser::StatementClosedCastExpressionContext *ctx){
-    if(ctx->statementUnaryExpression() == nullptr){
-        throw std::runtime_error{"as casts are not supported yet"};
+    if (ctx->statementUnaryExpression() != nullptr) {
+        return buildStatementUnary(ctx->statementUnaryExpression());
     }
-    return buildStatementUnary(ctx->statementUnaryExpression());
+    return std::make_unique<ast::CastExpr>(
+        buildStatementCast(ctx->statementCastExpression()),
+        buildClosedCastType(ctx->closedCastType())
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBitOr(rx::Parser::ConditionBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBitXor(ctx->conditionBitXorExpression(0));
+    auto operands = ctx->conditionBitXorExpression();
+    return buildBinaryChain(
+        buildConditionBitXor(operands[0]),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            return buildConditionBitXor(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBitXor(rx::Parser::ConditionBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBitAnd(ctx->conditionBitAndExpression(0));
+    auto operands = ctx->conditionBitAndExpression();
+    return buildBinaryChain(
+        buildConditionBitAnd(operands[0]),
+        ctx->CARET(),
+        [&](std::size_t i){
+            return buildConditionBitAnd(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBitAnd(rx::Parser::ConditionBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionShift(ctx->conditionShiftExpression(0));
+    auto operands = ctx->conditionShiftExpression();
+    return buildBinaryChain(
+        buildConditionShift(operands[0]),
+        ctx->AMP(),
+        [&](std::size_t i){
+            return buildConditionShift(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionShift(rx::Parser::ConditionShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionAdditive(ctx->conditionAdditiveExpression(0));
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildConditionAdditive(rx::Parser::ConditionAdditiveExpressionContext *ctx){
@@ -888,30 +1049,62 @@ ast::ExprPtr ASTBuilder::buildConditionMultiplicative(rx::Parser::ConditionMulti
 }
 
 ast::ExprPtr ASTBuilder::buildConditionCast(rx::Parser::ConditionCastExpressionContext *ctx){
-    if (!ctx->typeRef().empty()) {
-        throw std::runtime_error("as casts are not supported yet");
-    }
-    return buildConditionUnary(ctx->conditionUnaryExpression());
+    return buildCastChain(buildConditionUnary(ctx->conditionUnaryExpression()), ctx->typeRef());
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedBitOr(rx::Parser::ConditionClosedBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionClosedBitXor(ctx->conditionClosedBitXorExpression());
+    auto operands = ctx->conditionBitXorExpression();
+    if (operands.empty()) {
+        return buildConditionClosedBitXor(ctx->conditionClosedBitXorExpression());
+    }
+    return buildBinaryChain(
+        buildConditionBitXor(operands[0]),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            if (i + 1 < operands.size()) {
+                return buildConditionBitXor(operands[i + 1]);
+            }
+            return buildConditionClosedBitXor(ctx->conditionClosedBitXorExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedBitXor(rx::Parser::ConditionClosedBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionClosedBitAnd(ctx->conditionClosedBitAndExpression());
+    auto operands = ctx->conditionBitAndExpression();
+    if (operands.empty()) {
+        return buildConditionClosedBitAnd(ctx->conditionClosedBitAndExpression());
+    }
+    return buildBinaryChain(
+        buildConditionBitAnd(operands[0]),
+        ctx->CARET(),
+        [&](std::size_t i){
+            if (i + 1 < operands.size()) {
+                return buildConditionBitAnd(operands[i + 1]);
+            }
+            return buildConditionClosedBitAnd(ctx->conditionClosedBitAndExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedBitAnd(rx::Parser::ConditionClosedBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionClosedShift(ctx->conditionClosedShiftExpression());
+    auto operands = ctx->conditionShiftExpression();
+    if (operands.empty()) {
+        return buildConditionClosedShift(ctx->conditionClosedShiftExpression());
+    }
+    return buildBinaryChain(
+        buildConditionShift(operands[0]),
+        ctx->AMP(),
+        [&](std::size_t i){
+            if (i + 1 < operands.size()) {
+                return buildConditionShift(operands[i + 1]);
+            }
+            return buildConditionClosedShift(ctx->conditionClosedShiftExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedShift(rx::Parser::ConditionClosedShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionClosedAdditive(ctx->conditionClosedAdditiveExpression(0));
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildConditionLogicalOr(rx::Parser::ConditionLogicalOrExpressionContext *ctx){
@@ -994,26 +1187,21 @@ ast::ExprPtr ASTBuilder::buildConditionClosedMultiplicative(rx::Parser::Conditio
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedCast(rx::Parser::ConditionClosedCastExpressionContext *ctx){
-    if(ctx->conditionUnaryExpression() == nullptr){
-        throw std::runtime_error{"as casts are not supported yet"};
+    if (ctx->conditionUnaryExpression() != nullptr) {
+        return buildConditionUnary(ctx->conditionUnaryExpression());
     }
-    return buildConditionUnary(ctx->conditionUnaryExpression());
+    return std::make_unique<ast::CastExpr>(
+        buildConditionCast(ctx->conditionCastExpression()),
+        buildClosedCastType(ctx->closedCastType())
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionUnary(rx::Parser::ConditionUnaryExpressionContext *ctx){
-    if(ctx->unaryOperator() != nullptr){
-        std::string op = ctx->unaryOperator()->getText();
-        if(op != "!" && op != "-"){
-            throw std::runtime_error{"this unary operator is not supported yet"};
-        }
-
+    if (ctx->unaryOperator() != nullptr) {
+        // 递归先构建内层，使前缀运算从右向左嵌套。
         auto operand = buildConditionUnary(ctx->conditionUnaryExpression());
-        return std::make_unique<ast::UnaryExpr>(
-            op,
-            std::move(operand)
-        );
+        return buildUnaryOperator(ctx->unaryOperator(), std::move(operand));
     }
-    
     return buildConditionPostfix(ctx->conditionPostfixExpression());
 }
 
@@ -1138,45 +1326,100 @@ ast::ExprPtr ASTBuilder::buildConditionBreakComparison(rx::Parser::ConditionBrea
     );
 }
 
-// 与现有表达式入口保持一致，位运算和移位暂时只穿过单孩子规则。
+// 条件 break 的首个操作数使用专用规则，后续操作数使用普通条件规则。
 ast::ExprPtr ASTBuilder::buildConditionBreakBitOr(rx::Parser::ConditionBreakBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakBitXor(ctx->conditionBreakBitXorExpression());
+    auto operands = ctx->conditionBitXorExpression();
+    return buildBinaryChain(
+        buildConditionBreakBitXor(ctx->conditionBreakBitXorExpression()),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            return buildConditionBitXor(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakBitXor(rx::Parser::ConditionBreakBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakBitAnd(ctx->conditionBreakBitAndExpression());
+    auto operands = ctx->conditionBitAndExpression();
+    return buildBinaryChain(
+        buildConditionBreakBitAnd(ctx->conditionBreakBitAndExpression()),
+        ctx->CARET(),
+        [&](std::size_t i){
+            return buildConditionBitAnd(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakBitAnd(rx::Parser::ConditionBreakBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakShift(ctx->conditionBreakShiftExpression());
+    auto operands = ctx->conditionShiftExpression();
+    return buildBinaryChain(
+        buildConditionBreakShift(ctx->conditionBreakShiftExpression()),
+        ctx->AMP(),
+        [&](std::size_t i){
+            return buildConditionShift(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakShift(rx::Parser::ConditionBreakShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakAdditive(ctx->conditionBreakAdditiveExpression());
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitOr(rx::Parser::ConditionBreakClosedBitOrExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakClosedBitXor(ctx->conditionBreakClosedBitXorExpression());
+    if (ctx->conditionBreakClosedBitXorExpression() != nullptr) {
+        return buildConditionBreakClosedBitXor(ctx->conditionBreakClosedBitXorExpression());
+    }
+
+    auto operands = ctx->conditionBitXorExpression();
+    return buildBinaryChain(
+        buildConditionBreakBitXor(ctx->conditionBreakBitXorExpression()),
+        ctx->PIPE(),
+        [&](std::size_t i){
+            if (i < operands.size()) {
+                return buildConditionBitXor(operands[i]);
+            }
+            return buildConditionClosedBitXor(ctx->conditionClosedBitXorExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitXor(rx::Parser::ConditionBreakClosedBitXorExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakClosedBitAnd(ctx->conditionBreakClosedBitAndExpression());
+    if (ctx->conditionBreakClosedBitAndExpression() != nullptr) {
+        return buildConditionBreakClosedBitAnd(ctx->conditionBreakClosedBitAndExpression());
+    }
+
+    auto operands = ctx->conditionBitAndExpression();
+    return buildBinaryChain(
+        buildConditionBreakBitAnd(ctx->conditionBreakBitAndExpression()),
+        ctx->CARET(),
+        [&](std::size_t i){
+            if (i < operands.size()) {
+                return buildConditionBitAnd(operands[i]);
+            }
+            return buildConditionClosedBitAnd(ctx->conditionClosedBitAndExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitAnd(rx::Parser::ConditionBreakClosedBitAndExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakClosedShift(ctx->conditionBreakClosedShiftExpression());
+    if (ctx->conditionBreakClosedShiftExpression() != nullptr) {
+        return buildConditionBreakClosedShift(ctx->conditionBreakClosedShiftExpression());
+    }
+
+    auto operands = ctx->conditionShiftExpression();
+    return buildBinaryChain(
+        buildConditionBreakShift(ctx->conditionBreakShiftExpression()),
+        ctx->AMP(),
+        [&](std::size_t i){
+            if (i < operands.size()) {
+                return buildConditionShift(operands[i]);
+            }
+            return buildConditionClosedShift(ctx->conditionClosedShiftExpression());
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedShift(rx::Parser::ConditionBreakClosedShiftExpressionContext *ctx){
-    requireSingleChild(ctx);
-    return buildConditionBreakClosedAdditive(ctx->conditionBreakClosedAdditiveExpression());
+    return buildShiftChain(ctx);
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakAdditive(rx::Parser::ConditionBreakAdditiveExpressionContext *ctx){
@@ -1202,10 +1445,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakMultiplicative(rx::Parser::Condition
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakCast(rx::Parser::ConditionBreakCastExpressionContext *ctx){
-    if(!ctx->typeRef().empty()){
-        throw std::runtime_error{"as casts are not supported yet"};
-    }
-    return buildConditionBreakUnary(ctx->conditionBreakUnaryExpression());
+    return buildCastChain(buildConditionBreakUnary(ctx->conditionBreakUnaryExpression()), ctx->typeRef());
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedAdditive(rx::Parser::ConditionBreakClosedAdditiveExpressionContext *ctx){
@@ -1247,25 +1487,20 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedMultiplicative(rx::Parser::Con
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedCast(rx::Parser::ConditionBreakClosedCastExpressionContext *ctx){
-    if(ctx->conditionBreakUnaryExpression() == nullptr){
-        throw std::runtime_error{"as casts are not supported yet"};
+    if (ctx->conditionBreakUnaryExpression() != nullptr) {
+        return buildConditionBreakUnary(ctx->conditionBreakUnaryExpression());
     }
-    return buildConditionBreakUnary(ctx->conditionBreakUnaryExpression());
+    return std::make_unique<ast::CastExpr>(
+        buildConditionBreakCast(ctx->conditionBreakCastExpression()),
+        buildClosedCastType(ctx->closedCastType())
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakUnary(rx::Parser::ConditionBreakUnaryExpressionContext *ctx){
-    if(ctx->unaryOperator() != nullptr){
-        std::string op = ctx->unaryOperator()->getText();
-        if(op != "!" && op != "-"){
-            throw std::runtime_error{"this unary operator is not supported yet"};
-        }
-
-        // 前缀运算符后的操作数使用普通条件规则，例如 break -{ 1 }。
+    if (ctx->unaryOperator() != nullptr) {
+        // 前缀运算符后的操作数使用语法规定的普通表达式规则。
         auto operand = buildConditionUnary(ctx->conditionUnaryExpression());
-        return std::make_unique<ast::UnaryExpr>(
-            std::move(op),
-            std::move(operand)
-        );
+        return buildUnaryOperator(ctx->unaryOperator(), std::move(operand));
     }
     return buildConditionBreakPostfix(ctx->conditionBreakPostfixExpression());
 }
@@ -1357,6 +1592,10 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContex
         );
     }
 
+    if (auto *reference = ctx->referenceType()) {
+        return buildReferenceType(reference, buildTypeRef(reference->typeRef()));
+    }
+
     if (ctx->arrayType() != nullptr) {
         return buildArrayType(ctx->arrayType());
     }
@@ -1370,6 +1609,22 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContex
     }
 
     throw std::runtime_error("this type form is not supported yet");
+}
+
+std::unique_ptr<ast::TypeRef> ASTBuilder::buildClosedCastType(rx::Parser::ClosedCastTypeContext *ctx) {
+    // closedCastType 约束类型的结尾，避免把后续 < 或 << 读成泛型参数。
+    if (ctx->LPAREN() != nullptr) {
+        return ctx->typeRef() != nullptr ? buildTypeRef(ctx->typeRef())
+                                        : std::make_unique<ast::SimpleTypeRef>("()");
+    }
+    if (ctx->arrayType() != nullptr) {
+        return buildArrayType(ctx->arrayType());
+    }
+    if (ctx->closedCastType() != nullptr) {
+        return buildReferenceType(ctx, buildClosedCastType(ctx->closedCastType()));
+    }
+    // 与普通类型路径一致，保留完整路径文本，名称解析留给语义分析。
+    return std::make_unique<ast::SimpleTypeRef>(ctx->getText());
 }
 
 std::unique_ptr<ast::ArrayTypeRef> ASTBuilder::buildArrayType(rx::Parser::ArrayTypeContext *ctx) {

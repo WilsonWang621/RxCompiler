@@ -300,21 +300,5 @@ class ExpressionBuilderTests(unittest.TestCase):
                 self.check_ast(expression, ("ExprStmt:", expected))
                 self.check_ast("let x = " + expression + ";", ("LetStmt: x", expected))
 
-    def test_unsupported_operations_remain_rejected(self):
-        for expression, diagnostic in [
-            ("1 as i32", "as casts are not supported yet"),
-            ("1 as (i32) < 2", "as casts are not supported yet"),
-            ("x += 1", "compound assignment is not supported yet"),
-            ("1 | 2", "this expression form is not supported yet"),
-            ("1 << 2", "this expression form is not supported yet"),
-        ]:
-            for body in ["let x = " + expression + ";", expression + ";",
-                         "while " + expression + " {}", "while break " + expression + " {}"]:
-                with self.subTest(expression=expression, body=body):
-                    result = self.compile("fn main() { " + body + " }")
-                    self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertEqual(result.stderr, "error: " + diagnostic + "\n")
-
-
 if __name__ == "__main__":
     unittest.main()
