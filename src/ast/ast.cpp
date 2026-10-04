@@ -222,7 +222,17 @@ namespace rx::ast{
 
     void CallExpr::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
-        
+        out << "CallExpr\n";
+
+        printIndent(out, indent + 1);
+        out << "Callee:\n";
+        callee_->dump(out, indent + 2);
+
+        printIndent(out, indent + 1);
+        out << "Arguments:\n";
+        for (const auto &argument : arguments_) {
+            argument->dump(out, indent + 2);
+        }
     }
 
     void BreakExpr::dump(std::ostream &out, int indent) const{

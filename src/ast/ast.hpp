@@ -242,11 +242,13 @@ public:
 };
 
 class CallExpr final : public Expr{
+    // 被调用者可以是任意表达式，例如 f()(x) 或 a[i](x) 中前半部分。
     ExprPtr callee_;
-    std::vector<ExprPtr> arguments_;
+    std::vector<ExprPtr> arguments_;  // 按源码顺序保存；f() 的参数列表为空。
 
 public:
-    CallExpr(ExprPtr callee, std::vector<ExprPtr> argument) : callee_(std::move(callee)), arguments_(std::move(argument)){};
+    CallExpr(ExprPtr callee, std::vector<ExprPtr> arguments)
+        : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
