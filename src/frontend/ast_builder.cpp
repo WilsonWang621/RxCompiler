@@ -13,6 +13,56 @@ void requireSingleChild(antlr4::ParserRuleContext *ctx) {
     }
 }
 
+// 优先级已由解析树确定；这里只把同一层的左结合运算依次折叠成 BinaryExpr。
+// 各入口通过 buildRight 指定后续操作数的构建方式，包括 closed 的最后一项。
+template<class OperatorContext, class BuildRight>
+rx::ast::ExprPtr buildBinaryChain(rx::ast::ExprPtr result, const std::vector<OperatorContext*> &operators, BuildRight buildRight){
+    for(std::size_t i = 0; i < operators.size(); ++i){
+        std::string op = operators[i]->getText();
+        auto right = buildRight(i);
+
+        result = std::make_unique<rx::ast::BinaryExpr>(
+            std::move(op),
+            std::move(result),
+            std::move(right)
+        );
+    }
+    return result;
+}
+
+// 比较规则最多有一个运算符；没有运算符时直接返回左侧，不构建右侧。
+template<class OperatorContext, class BuildRight>
+rx::ast::ExprPtr buildOptionalBinary(rx::ast::ExprPtr left, OperatorContext *op, BuildRight buildRight){
+    if(op == nullptr){
+        return left;
+    }
+
+    std::string text = op->getText();
+    auto right = buildRight();
+    return std::make_unique<rx::ast::BinaryExpr>(
+        std::move(text),
+        std::move(left),
+        std::move(right)
+    );
+}
+
+// 赋值的右结合性由右侧 expression 的递归构建保留，具体入口由回调指定。
+template<class BuildRight>
+rx::ast::ExprPtr buildAssignment(rx::ast::ExprPtr left, rx::Parser::AssignmentOperatorContext *op, BuildRight buildRight){
+    if(op == nullptr){
+        return left;
+    }
+    if(op->equalsSign() == nullptr){
+        throw std::runtime_error{"compound assignment is not supported yet"};
+    }
+
+    auto right = buildRight();
+    return std::make_unique<rx::ast::AssignExpr>(
+        std::move(left),
+        std::move(right)
+    );
+}
+
 } // namespace
 
 namespace rx::frontend{
@@ -111,64 +161,22 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
     }
 
     if(ctx->expressionWithBlock() != nullptr){
-        auto withBlock = ctx->expressionWithBlock();
-        // while 是表达式；出现在语句位置时，外层包装为 ExprStmt。
-        if(withBlock->WHILE() != nullptr){
-            auto whileExpression = buildWhile(withBlock->conditionExpression(), withBlock->blockExpression());
-            return std::make_unique<ast::ExprStmt>(
-                std::move(whileExpression)
-            );
-        }
-        // loop 与 while 一样，在语句位置包装为 ExprStmt。
-        if(withBlock->LOOP() != nullptr){
-            auto loopExpression = buildLoop(withBlock->blockExpression());
-            return std::make_unique<ast::ExprStmt>(
-                std::move(loopExpression)
-            );
-        }
-        if(withBlock->blockExpression() != nullptr){
-            auto block = buildBlock(withBlock->blockExpression());
-            return std::make_unique<ast::ExprStmt>(
-                std::move(block)
-            );
-        }
-        if(withBlock->ifExpression() != nullptr){
-            auto ifExpression = buildIf(withBlock->ifExpression());
-            return std::make_unique<ast::ExprStmt>(
-                std::move(ifExpression)
-            );
-        }
+        // 带块表达式共用一个分派入口，在语句位置统一包装为 ExprStmt。
+        auto expression = buildExpressionWithBlock(ctx->expressionWithBlock());
+        return std::make_unique<ast::ExprStmt>(std::move(expression));
     }
 
     throw std::runtime_error("this statement form is not supported yet");
 }
 
 ast::ExprPtr ASTBuilder::buildExpression(rx::Parser::ExpressionContext *ctx){
-    auto *assignment = ctx->assignmentExpression();
-
-    auto *logicalOr = assignment->logicalOrExpression();
-    auto left = buildLogicalOr(logicalOr);
-
-    auto *op = assignment->assignmentOperator();
-
-    // 没有赋值运算，直接返回原表达式。
-    if (op == nullptr) {
-        return left;
-    }
-
-    // 本次只支持 =，暂不支持 += 等复合赋值。
-    if (op->equalsSign() == nullptr) {
-        throw std::runtime_error(
-            "compound assignment is not supported yet"
-        );
-    }
-
-    // 右侧是完整 expression，递归构造。
-    auto right = buildExpression(assignment->expression());
-
-    return std::make_unique<ast::AssignExpr>(
-        std::move(left),
-        std::move(right)
+    auto assignment = ctx->assignmentExpression();
+    return buildAssignment(
+        buildLogicalOr(assignment->logicalOrExpression()),
+        assignment->assignmentOperator(),
+        [&]{
+            return buildExpression(assignment->expression());
+        }
     );
 }
 
@@ -203,44 +211,24 @@ ast::ExprPtr ASTBuilder::buildLiteral(rx::Parser::LiteralExpressionContext *ctx)
 
 ast::ExprPtr ASTBuilder::buildAdditive(rx::Parser::AdditiveExpressionContext *ctx){
     auto operands = ctx->multiplicativeExpression();
-    auto operators = ctx->additiveOperator();
-
-    // 先构造第一个操作数。
-    auto result = buildMultiplicative(operands[0]);
-
-    // 从左到右，逐次把已有结果作为新的左孩子。
-    for (std::size_t i = 0; i < operators.size(); ++i) {
-        std::string op = operators[i]->getText();
-        auto right = buildMultiplicative(operands[i + 1]);
-
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-
-    return result;
+    return buildBinaryChain(
+        buildMultiplicative(operands[0]),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            return buildMultiplicative(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildMultiplicative(rx::Parser::MultiplicativeExpressionContext *ctx) {
     auto operands = ctx->castExpression();
-    auto operators = ctx->multiplicativeOperator();
-
-    auto result = buildCast(operands[0]);
-
-    for (std::size_t i = 0; i < operators.size(); ++i) {
-        std::string op = operators[i]->getText();
-        auto right = buildCast(operands[i + 1]);
-
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-
-    return result;
+    return buildBinaryChain(
+        buildCast(operands[0]),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            return buildCast(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildCast(rx::Parser::CastExpressionContext *ctx) {
@@ -292,24 +280,7 @@ ast::ExprPtr ASTBuilder::buildPrimary(rx::Parser::PrimaryExpressionContext *ctx)
     auto withBlock = ctx->expressionWithBlock();
 
     if (withBlock != nullptr) {
-        // 普通表达式入口，例如 let x = while false {};。
-        if(withBlock->WHILE() != nullptr){
-            return buildWhile(withBlock->conditionExpression(), withBlock->blockExpression());
-        }
-        if(withBlock->LOOP() != nullptr){
-            return buildLoop(withBlock->blockExpression());
-        }
-
-        auto block = withBlock->blockExpression();
-
-        if (block != nullptr) {
-            return buildBlock(block);
-        }
-
-        auto ifExpression = withBlock->ifExpression();
-        if(ifExpression != nullptr){
-            return buildIf(ifExpression);
-        }
+        return buildExpressionWithBlock(withBlock);
     }
 
     throw std::runtime_error{
@@ -355,70 +326,36 @@ ast::ExprPtr ASTBuilder::buildPath(rx::Parser::PathInExpressionContext *ctx){
 }
 
 ast::ExprPtr ASTBuilder::buildStatementExpression(rx::Parser::StatementExpressionContext *ctx){
-    auto *assignment = ctx->statementAssignmentExpression();
-
-    auto *logicalOr = assignment->statementLogicalOrExpression();
-    auto left = buildStatementLogicalOr(logicalOr);
-
-    auto *op = assignment->assignmentOperator();
-
-    if (op == nullptr) {
-        return left;
-    }
-
-    if (op->equalsSign() == nullptr) {
-        throw std::runtime_error(
-            "compound assignment is not supported yet"
-        );
-    }
-
-    // 注意：右侧回到普通 expression 入口
-    auto right = buildExpression(assignment->expression());
-
-    return std::make_unique<ast::AssignExpr>(
-        std::move(left),
-        std::move(right)
+    auto assignment = ctx->statementAssignmentExpression();
+    return buildAssignment(
+        buildStatementLogicalOr(assignment->statementLogicalOrExpression()),
+        assignment->assignmentOperator(),
+        [&]{
+            return buildExpression(assignment->expression());
+        }
     );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementAdditive(rx::Parser::StatementAdditiveExpressionContext *ctx) {
-    auto result = buildStatementMultiplicative(ctx->statementMultiplicativeExpression());
-
-    auto operators = ctx->additiveOperator();
     auto operands = ctx->multiplicativeExpression();
-
-    for (std::size_t i = 0; i < operators.size(); ++i) {
-        std::string op = operators[i]->getText();
-        auto right = buildMultiplicative(operands[i]);
-
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-
-    return result;
+    return buildBinaryChain(
+        buildStatementMultiplicative(ctx->statementMultiplicativeExpression()),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            return buildMultiplicative(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementMultiplicative(rx::Parser::StatementMultiplicativeExpressionContext *ctx) {
-    auto result = buildStatementCast(ctx->statementCastExpression());
-
-    auto operators = ctx->multiplicativeOperator();
     auto operands = ctx->castExpression();
-
-    for (std::size_t i = 0; i < operators.size(); ++i) {
-        std::string op = operators[i]->getText();
-        auto right = buildCast(operands[i]);
-
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-
-    return result;
+    return buildBinaryChain(
+        buildStatementCast(ctx->statementCastExpression()),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            return buildCast(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementCast(rx::Parser::StatementCastExpressionContext *ctx) {
@@ -538,22 +475,12 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
     // Boolean operators, comparisons, closed operands and if expressions.
 ast::ExprPtr ASTBuilder::buildConditionExpression(rx::Parser::ConditionExpressionContext *ctx){
     auto assignment = ctx->conditionAssignmentExpression();
-    
-    auto left = buildConditionLogicalOr(assignment->conditionLogicalOrExpression());
-    auto op = assignment->assignmentOperator();
-
-    if(op == nullptr){
-        return left;
-    }
-    if(op->equalsSign() == nullptr){
-        throw std::runtime_error{"compound assignment is not supported yet"};
-    }
-
-    auto right = buildConditionExpression(assignment->conditionExpression());
-
-    return std::make_unique<ast::AssignExpr>(
-        std::move(left),
-        std::move(right)
+    return buildAssignment(
+        buildConditionLogicalOr(assignment->conditionLogicalOrExpression()),
+        assignment->assignmentOperator(),
+        [&]{
+            return buildConditionExpression(assignment->conditionExpression());
+        }
     );
 }
 
@@ -599,114 +526,80 @@ ast::ExprPtr ASTBuilder::buildClosedShift(rx::Parser::ClosedShiftExpressionConte
 
 ast::ExprPtr ASTBuilder::buildLogicalOr(rx::Parser::LogicalOrExpressionContext *ctx){
     auto operands = ctx->logicalAndExpression();
-    auto result = buildLogicalAnd(operands[0]);
-
-    for(std::size_t i = 1; i < operands.size(); ++i){
-        auto right = buildLogicalAnd(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "||",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildLogicalAnd(operands[0]),
+        ctx->OROR(),
+        [&](std::size_t i){
+            return buildLogicalAnd(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildLogicalAnd(rx::Parser::LogicalAndExpressionContext *ctx){
     auto operands = ctx->comparisonExpression();
-    auto result = buildComparison(operands[0]);
-
-    for(std::size_t i = 1; i < operands.size(); ++i){
-        auto right = buildComparison(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "&&",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildComparison(operands[0]),
+        ctx->ANDAND(),
+        [&](std::size_t i){
+            return buildComparison(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildComparison(rx::Parser::ComparisonExpressionContext *ctx){
-    //closedBitOrExpression LT bitOrExpression
     if(ctx->LT() != nullptr){
-        auto left = buildClosedBitOr(ctx->closedBitOrExpression());
-        auto right = buildBitOr(ctx->bitOrExpression(0));
-        
-        return std::make_unique<ast::BinaryExpr>(
-            "<",
-            std::move(left),
-            std::move(right)
+        return buildOptionalBinary(
+            buildClosedBitOr(ctx->closedBitOrExpression()),
+            ctx->LT(),
+            [&]{
+                return buildBitOr(ctx->bitOrExpression(0));
+            }
         );
     }
 
-    //bitOrExpression (comparisonExceptLt bitOrExpression)?
-    auto left = buildBitOr(ctx->bitOrExpression(0));
-    if(ctx->comparisonExceptLt() == nullptr){
-        return left;
-    }
-    std::string op = ctx->comparisonExceptLt()->getText();
-    auto right = buildBitOr(ctx->bitOrExpression(1));
-
-    return std::make_unique<ast::BinaryExpr>(
-        op,
-        std::move(left),
-        std::move(right)
+    return buildOptionalBinary(
+        buildBitOr(ctx->bitOrExpression(0)),
+        ctx->comparisonExceptLt(),
+        [&]{
+            return buildBitOr(ctx->bitOrExpression(1));
+        }
     );
 }
 
 ast::ExprPtr ASTBuilder::buildClosedAdditive(rx::Parser::ClosedAdditiveExpressionContext *ctx){
     auto operands = ctx->multiplicativeExpression();
-    auto operators = ctx->additiveOperator();
-
     if(operands.empty()){
         return buildClosedMultiplicative(ctx->closedMultiplicativeExpression());
     }
-    
-    auto result = buildMultiplicative(operands[0]);
-    for(size_t i = 0; i < operators.size(); i++){
-        std::string op = operators[i]->getText();
-        ast::ExprPtr right;
-        if(i + 1 < operands.size()){
-            right = buildMultiplicative(operands[i + 1]);
-        }else{
-            right = buildClosedMultiplicative(ctx->closedMultiplicativeExpression());
+    return buildBinaryChain(
+        buildMultiplicative(operands[0]),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            if(i + 1 < operands.size()){
+                return buildMultiplicative(operands[i + 1]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildClosedMultiplicative(ctx->closedMultiplicativeExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildClosedMultiplicative(rx::Parser::ClosedMultiplicativeExpressionContext *ctx){
     auto operands = ctx->castExpression();
-    auto operators = ctx->multiplicativeOperator();
-
     if(operands.empty()){
         return buildClosedCast(ctx->closedCastExpression());
     }
-
-    auto result = buildCast(operands[0]);
-    for(size_t i = 0; i < operators.size(); i++){
-        std::string op = operators[i]->getText();
-        ast::ExprPtr right;
-        if(i + 1 < operands.size()){
-            right = buildCast(operands[i + 1]);
+    return buildBinaryChain(
+        buildCast(operands[0]),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            if(i + 1 < operands.size()){
+                return buildCast(operands[i + 1]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildClosedCast(ctx->closedCastExpression());
         }
-        else{
-            right = buildClosedCast(ctx->closedCastExpression());
-        }
-
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildClosedCast(rx::Parser::ClosedCastExpressionContext *ctx){
@@ -759,59 +652,44 @@ ast::ExprPtr ASTBuilder::buildStatementClosedShift(rx::Parser::StatementClosedSh
 
 ast::ExprPtr ASTBuilder::buildStatementLogicalOr(rx::Parser::StatementLogicalOrExpressionContext *ctx){
     auto operands = ctx->logicalAndExpression();
-    auto result = buildStatementLogicalAnd(ctx->statementLogicalAndExpression());
-
-    for(std::size_t i = 0; i < operands.size(); ++i){
-        auto right = buildLogicalAnd(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "||",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildStatementLogicalAnd(ctx->statementLogicalAndExpression()),
+        ctx->OROR(),
+        [&](std::size_t i){
+            return buildLogicalAnd(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementLogicalAnd(rx::Parser::StatementLogicalAndExpressionContext *ctx){
     auto operands = ctx->comparisonExpression();
-    auto result = buildStatementComparison(ctx->statementComparisonExpression());
-
-    for(std::size_t i = 0; i < operands.size(); ++i){
-        auto right = buildComparison(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "&&",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildStatementComparison(ctx->statementComparisonExpression()),
+        ctx->ANDAND(),
+        [&](std::size_t i){
+            return buildComparison(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementComparison(rx::Parser::StatementComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
-        auto left = buildStatementClosedBitOr(ctx->statementClosedBitOrExpression());
-        auto right = buildBitOr(ctx->bitOrExpression());
-
-        return std::make_unique<ast::BinaryExpr>(
-            "<",
-            std::move(left),
-            std::move(right)
+        return buildOptionalBinary(
+            buildStatementClosedBitOr(ctx->statementClosedBitOrExpression()),
+            ctx->LT(),
+            [&]{
+                return buildBitOr(ctx->bitOrExpression());
+            }
         );
     }
 
-    auto left = buildStatementBitOr(ctx->statementBitOrExpression());
-    auto *op = ctx->comparisonExceptLt();
-    if(op == nullptr){
-        return left;
-    }
-
-    auto right = buildBitOr(ctx->bitOrExpression());
-    return std::make_unique<ast::BinaryExpr>(
-        op->getText(),
-        std::move(left),
-        std::move(right)
+    return buildOptionalBinary(
+        buildStatementBitOr(ctx->statementBitOrExpression()),
+        ctx->comparisonExceptLt(),
+        [&]{
+            return buildBitOr(ctx->bitOrExpression());
+        }
     );
-
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedAdditive(rx::Parser::StatementClosedAdditiveExpressionContext *ctx){
@@ -819,24 +697,18 @@ ast::ExprPtr ASTBuilder::buildStatementClosedAdditive(rx::Parser::StatementClose
         return buildStatementClosedMultiplicative(ctx->statementClosedMultiplicativeExpression());
     }
 
-    auto result = buildStatementMultiplicative(ctx->statementMultiplicativeExpression());
     auto operands = ctx->multiplicativeExpression();
-    auto operators = ctx->additiveOperator();
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        std::string op = operators[i]->getText();
-        ast::ExprPtr right;
-        if(i < operands.size()){
-            right = buildMultiplicative(operands[i]);
-        }else{
-            right = buildClosedMultiplicative(ctx->closedMultiplicativeExpression());
+    return buildBinaryChain(
+        buildStatementMultiplicative(ctx->statementMultiplicativeExpression()),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            if(i < operands.size()){
+                return buildMultiplicative(operands[i]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildClosedMultiplicative(ctx->closedMultiplicativeExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedMultiplicative(rx::Parser::StatementClosedMultiplicativeExpressionContext *ctx){
@@ -844,24 +716,18 @@ ast::ExprPtr ASTBuilder::buildStatementClosedMultiplicative(rx::Parser::Statemen
         return buildStatementClosedCast(ctx->statementClosedCastExpression());
     }
 
-    auto result = buildStatementCast(ctx->statementCastExpression());
     auto operands = ctx->castExpression();
-    auto operators = ctx->multiplicativeOperator();
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        std::string op = operators[i]->getText();
-        ast::ExprPtr right;
-        if(i < operands.size()){
-            right = buildCast(operands[i]);
-        }else{
-            right = buildClosedCast(ctx->closedCastExpression());
+    return buildBinaryChain(
+        buildStatementCast(ctx->statementCastExpression()),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            if(i < operands.size()){
+                return buildCast(operands[i]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildClosedCast(ctx->closedCastExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildStatementClosedCast(rx::Parser::StatementClosedCastExpressionContext *ctx){
@@ -893,34 +759,24 @@ ast::ExprPtr ASTBuilder::buildConditionShift(rx::Parser::ConditionShiftExpressio
 
 ast::ExprPtr ASTBuilder::buildConditionAdditive(rx::Parser::ConditionAdditiveExpressionContext *ctx){
     auto operands = ctx->conditionMultiplicativeExpression();
-    auto operators = ctx->additiveOperator();
-    auto result = buildConditionMultiplicative(operands[0]);
-
-    for (std::size_t i = 0; i < operators.size(); ++i) {
-        auto right = buildConditionMultiplicative(operands[i + 1]);
-        result = std::make_unique<ast::BinaryExpr>(
-            operators[i]->getText(),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionMultiplicative(operands[0]),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            return buildConditionMultiplicative(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionMultiplicative(rx::Parser::ConditionMultiplicativeExpressionContext *ctx){
     auto operands = ctx->conditionCastExpression();
-    auto operators = ctx->multiplicativeOperator();
-    auto result = buildConditionCast(operands[0]);
-
-    for (std::size_t i = 0; i < operators.size(); ++i) {
-        auto right = buildConditionCast(operands[i + 1]);
-        result = std::make_unique<ast::BinaryExpr>(
-            operators[i]->getText(),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionCast(operands[0]),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            return buildConditionCast(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionCast(rx::Parser::ConditionCastExpressionContext *ctx){
@@ -952,108 +808,81 @@ ast::ExprPtr ASTBuilder::buildConditionClosedShift(rx::Parser::ConditionClosedSh
 
 ast::ExprPtr ASTBuilder::buildConditionLogicalOr(rx::Parser::ConditionLogicalOrExpressionContext *ctx){
     auto operands = ctx->conditionLogicalAndExpression();
-    auto result = buildConditionLogicalAnd(operands[0]);
-
-    for(std::size_t i = 1; i < operands.size(); ++i){
-        auto right = buildConditionLogicalAnd(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "||",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionLogicalAnd(operands[0]),
+        ctx->OROR(),
+        [&](std::size_t i){
+            return buildConditionLogicalAnd(operands[i + 1]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionLogicalAnd(rx::Parser::ConditionLogicalAndExpressionContext *ctx){
     auto operands = ctx->conditionComparisonExpression();
-    auto result = buildConditionComparison(operands[0]);
-
-    for(std::size_t i = 1; i < operands.size(); ++i){
-        auto right = buildConditionComparison(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "&&",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionComparison(operands[0]),
+        ctx->ANDAND(),
+        [&](std::size_t i){
+            return buildConditionComparison(operands[i + 1]);
+        }
+    );
 }
 
 
 ast::ExprPtr ASTBuilder::buildConditionComparison(rx::Parser::ConditionComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
-        auto left = buildConditionClosedBitOr(ctx->conditionClosedBitOrExpression());
-        auto right = buildConditionBitOr(ctx->conditionBitOrExpression(0));
-        return std::make_unique<ast::BinaryExpr>(
-            "<",
-            std::move(left),
-            std::move(right)
+        return buildOptionalBinary(
+            buildConditionClosedBitOr(ctx->conditionClosedBitOrExpression()),
+            ctx->LT(),
+            [&]{
+                return buildConditionBitOr(ctx->conditionBitOrExpression(0));
+            }
         );
     }
 
-    auto left = buildConditionBitOr(ctx->conditionBitOrExpression(0));
-    auto *op = ctx->comparisonExceptLt();
-    if(op == nullptr){
-        return left;
-    }
-
-    auto right = buildConditionBitOr(ctx->conditionBitOrExpression(1));
-    return std::make_unique<ast::BinaryExpr>(
-        op->getText(),
-        std::move(left),
-        std::move(right)
+    return buildOptionalBinary(
+        buildConditionBitOr(ctx->conditionBitOrExpression(0)),
+        ctx->comparisonExceptLt(),
+        [&]{
+            return buildConditionBitOr(ctx->conditionBitOrExpression(1));
+        }
     );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedAdditive(rx::Parser::ConditionClosedAdditiveExpressionContext *ctx){
     auto operands = ctx->conditionMultiplicativeExpression();
-    auto operators = ctx->additiveOperator();
     if(operands.empty()){
         return buildConditionClosedMultiplicative(ctx->conditionClosedMultiplicativeExpression());
     }
-
-    auto result = buildConditionMultiplicative(operands[0]);
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        std::string op = operators[i]->getText();
-        ast::ExprPtr right;
-        if(i + 1 < operands.size()){
-            right = buildConditionMultiplicative(operands[i + 1]);
-        }else{
-            right = buildConditionClosedMultiplicative(ctx->conditionClosedMultiplicativeExpression());
+    return buildBinaryChain(
+        buildConditionMultiplicative(operands[0]),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            if(i + 1 < operands.size()){
+                return buildConditionMultiplicative(operands[i + 1]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildConditionClosedMultiplicative(ctx->conditionClosedMultiplicativeExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedMultiplicative(rx::Parser::ConditionClosedMultiplicativeExpressionContext *ctx){
     auto operands = ctx->conditionCastExpression();
-    auto operators = ctx->multiplicativeOperator();
     if(operands.empty()){
         return buildConditionClosedCast(ctx->conditionClosedCastExpression());
     }
-
-    auto result = buildConditionCast(operands[0]);
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        std::string op = operators[i]->getText();
-        ast::ExprPtr right;
-        if(i + 1 < operands.size()){
-            right = buildConditionCast(operands[i + 1]);
-        }else{
-            right = buildConditionClosedCast(ctx->conditionClosedCastExpression());
+    return buildBinaryChain(
+        buildConditionCast(operands[0]),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            if(i + 1 < operands.size()){
+                return buildConditionCast(operands[i + 1]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildConditionClosedCast(ctx->conditionClosedCastExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            std::move(op),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionClosedCast(rx::Parser::ConditionClosedCastExpressionContext *ctx){
@@ -1146,76 +975,54 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
 
 ast::ExprPtr ASTBuilder::buildConditionBreakExpression(rx::Parser::ConditionBreakExpressionContext *ctx){
     auto assignment = ctx->conditionBreakAssignmentExpression();
-    auto left = buildConditionBreakLogicalOr(assignment->conditionBreakLogicalOrExpression());
-    auto op = assignment->assignmentOperator();
-
-    if(op == nullptr){
-        return left;
-    }
-    if(op->equalsSign() == nullptr){
-        throw std::runtime_error{"compound assignment is not supported yet"};
-    }
-
-    // 只有首个操作数使用 conditionBreak 规则，后续操作数回到普通条件入口。
-    auto right = buildConditionExpression(assignment->conditionExpression());
-    return std::make_unique<ast::AssignExpr>(
-        std::move(left),
-        std::move(right)
+    return buildAssignment(
+        buildConditionBreakLogicalOr(assignment->conditionBreakLogicalOrExpression()),
+        assignment->assignmentOperator(),
+        [&]{
+            return buildConditionExpression(assignment->conditionExpression());
+        }
     );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakLogicalOr(rx::Parser::ConditionBreakLogicalOrExpressionContext *ctx){
     auto operands = ctx->conditionLogicalAndExpression();
-    auto result = buildConditionBreakLogicalAnd(ctx->conditionBreakLogicalAndExpression());
-
-    for(std::size_t i = 0; i < operands.size(); ++i){
-        auto right = buildConditionLogicalAnd(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "||",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionBreakLogicalAnd(ctx->conditionBreakLogicalAndExpression()),
+        ctx->OROR(),
+        [&](std::size_t i){
+            return buildConditionLogicalAnd(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakLogicalAnd(rx::Parser::ConditionBreakLogicalAndExpressionContext *ctx){
     auto operands = ctx->conditionComparisonExpression();
-    auto result = buildConditionBreakComparison(ctx->conditionBreakComparisonExpression());
-
-    for(std::size_t i = 0; i < operands.size(); ++i){
-        auto right = buildConditionComparison(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            "&&",
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionBreakComparison(ctx->conditionBreakComparisonExpression()),
+        ctx->ANDAND(),
+        [&](std::size_t i){
+            return buildConditionComparison(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakComparison(rx::Parser::ConditionBreakComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
-        auto left = buildConditionBreakClosedBitOr(ctx->conditionBreakClosedBitOrExpression());
-        auto right = buildConditionBitOr(ctx->conditionBitOrExpression());
-        return std::make_unique<ast::BinaryExpr>(
-            "<",
-            std::move(left),
-            std::move(right)
+        return buildOptionalBinary(
+            buildConditionBreakClosedBitOr(ctx->conditionBreakClosedBitOrExpression()),
+            ctx->LT(),
+            [&]{
+                return buildConditionBitOr(ctx->conditionBitOrExpression());
+            }
         );
     }
 
-    auto left = buildConditionBreakBitOr(ctx->conditionBreakBitOrExpression());
-    auto *op = ctx->comparisonExceptLt();
-    if(op == nullptr){
-        return left;
-    }
-
-    auto right = buildConditionBitOr(ctx->conditionBitOrExpression());
-    return std::make_unique<ast::BinaryExpr>(
-        op->getText(),
-        std::move(left),
-        std::move(right)
+    return buildOptionalBinary(
+        buildConditionBreakBitOr(ctx->conditionBreakBitOrExpression()),
+        ctx->comparisonExceptLt(),
+        [&]{
+            return buildConditionBitOr(ctx->conditionBitOrExpression());
+        }
     );
 }
 
@@ -1262,34 +1069,24 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedShift(rx::Parser::ConditionBre
 
 ast::ExprPtr ASTBuilder::buildConditionBreakAdditive(rx::Parser::ConditionBreakAdditiveExpressionContext *ctx){
     auto operands = ctx->conditionMultiplicativeExpression();
-    auto operators = ctx->additiveOperator();
-    auto result = buildConditionBreakMultiplicative(ctx->conditionBreakMultiplicativeExpression());
-
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        auto right = buildConditionMultiplicative(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            operators[i]->getText(),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionBreakMultiplicative(ctx->conditionBreakMultiplicativeExpression()),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            return buildConditionMultiplicative(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakMultiplicative(rx::Parser::ConditionBreakMultiplicativeExpressionContext *ctx){
     auto operands = ctx->conditionCastExpression();
-    auto operators = ctx->multiplicativeOperator();
-    auto result = buildConditionBreakCast(ctx->conditionBreakCastExpression());
-
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        auto right = buildConditionCast(operands[i]);
-        result = std::make_unique<ast::BinaryExpr>(
-            operators[i]->getText(),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    return buildBinaryChain(
+        buildConditionBreakCast(ctx->conditionBreakCastExpression()),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            return buildConditionCast(operands[i]);
+        }
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakCast(rx::Parser::ConditionBreakCastExpressionContext *ctx){
@@ -1304,24 +1101,18 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedAdditive(rx::Parser::Condition
         return buildConditionBreakClosedMultiplicative(ctx->conditionBreakClosedMultiplicativeExpression());
     }
 
-    auto result = buildConditionBreakMultiplicative(ctx->conditionBreakMultiplicativeExpression());
     auto operands = ctx->conditionMultiplicativeExpression();
-    auto operators = ctx->additiveOperator();
-    // closed 分支的最后一个操作数使用 closed 入口，供外层的 < 正确解析。
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        ast::ExprPtr right;
-        if(i < operands.size()){
-            right = buildConditionMultiplicative(operands[i]);
-        }else{
-            right = buildConditionClosedMultiplicative(ctx->conditionClosedMultiplicativeExpression());
+    return buildBinaryChain(
+        buildConditionBreakMultiplicative(ctx->conditionBreakMultiplicativeExpression()),
+        ctx->additiveOperator(),
+        [&](std::size_t i){
+            if(i < operands.size()){
+                return buildConditionMultiplicative(operands[i]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildConditionClosedMultiplicative(ctx->conditionClosedMultiplicativeExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            operators[i]->getText(),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedMultiplicative(rx::Parser::ConditionBreakClosedMultiplicativeExpressionContext *ctx){
@@ -1329,23 +1120,18 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedMultiplicative(rx::Parser::Con
         return buildConditionBreakClosedCast(ctx->conditionBreakClosedCastExpression());
     }
 
-    auto result = buildConditionBreakCast(ctx->conditionBreakCastExpression());
     auto operands = ctx->conditionCastExpression();
-    auto operators = ctx->multiplicativeOperator();
-    for(std::size_t i = 0; i < operators.size(); ++i){
-        ast::ExprPtr right;
-        if(i < operands.size()){
-            right = buildConditionCast(operands[i]);
-        }else{
-            right = buildConditionClosedCast(ctx->conditionClosedCastExpression());
+    return buildBinaryChain(
+        buildConditionBreakCast(ctx->conditionBreakCastExpression()),
+        ctx->multiplicativeOperator(),
+        [&](std::size_t i){
+            if(i < operands.size()){
+                return buildConditionCast(operands[i]);
+            }
+            // 最后一项保留 closed 入口，供外层的 < 正确解析。
+            return buildConditionClosedCast(ctx->conditionClosedCastExpression());
         }
-        result = std::make_unique<ast::BinaryExpr>(
-            operators[i]->getText(),
-            std::move(result),
-            std::move(right)
-        );
-    }
-    return result;
+    );
 }
 
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedCast(rx::Parser::ConditionBreakClosedCastExpressionContext *ctx){

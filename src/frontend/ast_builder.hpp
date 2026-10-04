@@ -7,6 +7,7 @@ namespace rx::frontend{
 
 class ASTBuilder final : public ParserBaseVisitor{
 
+    // 各 build 入口适配不同的 Context；优先级由语法决定，公共构建逻辑在 cpp 中复用。
     std::unique_ptr<ast::Item> buildItem(rx::Parser::ItemContext *ctx);
 
     std::unique_ptr<ast::FunctionItem> buildFunction(rx::Parser::FunctionDefinitionContext *ctx);
@@ -157,7 +158,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildConditionPrimaryWithoutBareBlock(rx::Parser::ConditionPrimaryWithoutBareBlockContext *ctx);
 
-    // conditionBreak 前缀：break 在条件位置的值，首个 primary 不能是裸块。
+    // conditionBreak 前缀：break 在条件位置的值不能直接以裸块开头。
     ast::ExprPtr buildConditionBreakExpression(rx::Parser::ConditionBreakExpressionContext *ctx);
 
     ast::ExprPtr buildConditionBreakLogicalOr(rx::Parser::ConditionBreakLogicalOrExpressionContext *ctx);
