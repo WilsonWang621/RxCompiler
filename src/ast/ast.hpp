@@ -244,6 +244,16 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+// loop { ... }：只持有循环体，退出由循环体中的 break 表达式表示。
+class LoopExpr final : public Expr{
+private:
+    std::unique_ptr<BlockExpr> block_;
+public:
+    explicit LoopExpr(std::unique_ptr<BlockExpr> block): block_(std::move(block)){};
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 // while condition { ... }：节点分别持有条件表达式和循环体。
 class WhileExpr final : public Expr{
 private:

@@ -200,6 +200,9 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildIf(rx::Parser::IfExpressionContext *ctx);
 
+    // loop 在两条语法规则中出现，共用循环体的构建逻辑。
+    ast::ExprPtr buildLoop(rx::Parser::BlockExpressionContext *ctx);
+
     // while 在两条语法规则中出现，共用条件和循环体的构建逻辑。
     ast::ExprPtr buildWhile(rx::Parser::ConditionExpressionContext *conditionCtx, rx::Parser::BlockExpressionContext *blockCtx);
 

@@ -135,6 +135,15 @@ namespace rx::ast{
         } 
     }
 
+    void LoopExpr::dump(std::ostream &out, int indent) const{
+        printIndent(out, indent);
+        out << "LoopExpr\n";
+
+        printIndent(out, indent + 1);
+        out << "Body:\n";
+        block_->dump(out, indent + 2);
+    }
+
     // Condition 和 Body 是同级分组，各自的子树再缩进一层。
     void WhileExpr::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);

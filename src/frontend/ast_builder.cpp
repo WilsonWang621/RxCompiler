@@ -119,11 +119,12 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
                 std::move(whileExpression)
             );
         }
-        // 暂不支持 loop。
-        if (withBlock->LOOP() != nullptr) {
-            throw std::runtime_error{
-                "loop is not supported yet"
-            };
+        // loop 与 while 一样，在语句位置包装为 ExprStmt。
+        if(withBlock->LOOP() != nullptr){
+            auto loopExpression = buildLoop(withBlock->blockExpression());
+            return std::make_unique<ast::ExprStmt>(
+                std::move(loopExpression)
+            );
         }
         if(withBlock->blockExpression() != nullptr){
             auto block = buildBlock(withBlock->blockExpression());
@@ -295,10 +296,8 @@ ast::ExprPtr ASTBuilder::buildPrimary(rx::Parser::PrimaryExpressionContext *ctx)
         if(withBlock->WHILE() != nullptr){
             return buildWhile(withBlock->conditionExpression(), withBlock->blockExpression());
         }
-        if (withBlock->LOOP() != nullptr) {
-            throw std::runtime_error{
-                "loop is not supported yet"
-            };
+        if(withBlock->LOOP() != nullptr){
+            return buildLoop(withBlock->blockExpression());
         }
 
         auto block = withBlock->blockExpression();
@@ -1096,9 +1095,12 @@ ast::ExprPtr ASTBuilder::buildConditionPrimary(rx::Parser::ConditionPrimaryConte
 }
 
 ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::ConditionPrimaryWithoutBareBlockContext *ctx){
-    // 条件位置也有独立的 while 语法分支，AST 构建阶段统一处理。
+    // 条件位置也有独立的 while 和 loop 语法分支，AST 构建阶段统一处理。
     if(ctx->WHILE() != nullptr){
         return buildWhile(ctx->conditionExpression(), ctx->blockExpression());
+    }
+    if(ctx->LOOP() != nullptr){
+        return buildLoop(ctx->blockExpression());
     }
     if(ctx->literalExpression() != nullptr){
         return buildLiteral(ctx->literalExpression());
@@ -1395,6 +1397,15 @@ ast::ExprPtr ASTBuilder::buildIf(rx::Parser::IfExpressionContext *ctx){
     );
 }
 
+ast::ExprPtr ASTBuilder::buildLoop(rx::Parser::BlockExpressionContext *ctx){
+    // 复用块构建，保留 break 的可选值、continue 和嵌套循环等子节点。
+    auto block = buildBlock(ctx);
+
+    return std::make_unique<ast::LoopExpr>(
+        std::move(block)
+    );
+}
+
 ast::ExprPtr ASTBuilder::buildWhile(rx::Parser::ConditionExpressionContext *conditionCtx, rx::Parser::BlockExpressionContext *blockCtx){
     // 与 if 共用条件表达式入口，保留比较、逻辑运算等表达式的优先级。
     auto condition = buildConditionExpression(conditionCtx);
@@ -1415,7 +1426,7 @@ ast::ExprPtr ASTBuilder::buildExpressionWithBlock(rx::Parser::ExpressionWithBloc
         return buildWhile(ctx->conditionExpression(), ctx->blockExpression());
     }
     if(ctx->LOOP() != nullptr){
-        throw std::runtime_error{"loop is not supported yet"};
+        return buildLoop(ctx->blockExpression());
     }
     if(ctx->ifExpression() != nullptr){
         return buildIf(ctx->ifExpression());
