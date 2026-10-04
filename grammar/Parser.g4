@@ -261,11 +261,16 @@ closedBitAndExpression
     ;
 
 shiftExpression
-    : (closedAdditiveExpression SHL | additiveExpression shiftRight)* additiveExpression
+    // 先匹配完整操作数，让其中的 break/return 优先消费自己的移位表达式。
+    : additiveExpression
+    | (closedAdditiveExpression SHL | additiveExpression shiftRight)
+      (closedAdditiveExpression SHL | additiveExpression shiftRight)* additiveExpression
     ;
 
 closedShiftExpression
-    : (closedAdditiveExpression SHL | additiveExpression shiftRight)* closedAdditiveExpression
+    : closedAdditiveExpression
+    | (closedAdditiveExpression SHL | additiveExpression shiftRight)
+      (closedAdditiveExpression SHL | additiveExpression shiftRight)* closedAdditiveExpression
     ;
 
 additiveExpression
@@ -349,11 +354,15 @@ conditionClosedBitAndExpression
     ;
 
 conditionShiftExpression
-    : (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)* conditionAdditiveExpression
+    : conditionAdditiveExpression
+    | (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)
+      (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)* conditionAdditiveExpression
     ;
 
 conditionClosedShiftExpression
-    : (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)* conditionClosedAdditiveExpression
+    : conditionClosedAdditiveExpression
+    | (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)
+      (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)* conditionClosedAdditiveExpression
     ;
 
 conditionAdditiveExpression
@@ -441,15 +450,16 @@ conditionBreakClosedBitAndExpression
     ;
 
 conditionBreakShiftExpression
-    : conditionBreakAdditiveExpression
-    | (conditionBreakClosedAdditiveExpression SHL | conditionBreakAdditiveExpression shiftRight)
+    // 优先匹配移位链，避免在 while break a << b 中过早结束 break 的操作数。
+    : (conditionBreakClosedAdditiveExpression SHL | conditionBreakAdditiveExpression shiftRight)
       (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)* conditionAdditiveExpression
+    | conditionBreakAdditiveExpression
     ;
 
 conditionBreakClosedShiftExpression
-    : conditionBreakClosedAdditiveExpression
-    | (conditionBreakClosedAdditiveExpression SHL | conditionBreakAdditiveExpression shiftRight)
+    : (conditionBreakClosedAdditiveExpression SHL | conditionBreakAdditiveExpression shiftRight)
       (conditionClosedAdditiveExpression SHL | conditionAdditiveExpression shiftRight)* conditionClosedAdditiveExpression
+    | conditionBreakClosedAdditiveExpression
     ;
 
 conditionBreakAdditiveExpression

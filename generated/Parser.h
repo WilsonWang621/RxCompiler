@@ -1895,12 +1895,12 @@ public:
   public:
     ConditionBreakShiftExpressionContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    ConditionBreakAdditiveExpressionContext *conditionBreakAdditiveExpression();
     std::vector<ConditionAdditiveExpressionContext *> conditionAdditiveExpression();
     ConditionAdditiveExpressionContext* conditionAdditiveExpression(size_t i);
     ConditionBreakClosedAdditiveExpressionContext *conditionBreakClosedAdditiveExpression();
     std::vector<antlr4::tree::TerminalNode *> SHL();
     antlr4::tree::TerminalNode* SHL(size_t i);
+    ConditionBreakAdditiveExpressionContext *conditionBreakAdditiveExpression();
     std::vector<ShiftRightContext *> shiftRight();
     ShiftRightContext* shiftRight(size_t i);
     std::vector<ConditionClosedAdditiveExpressionContext *> conditionClosedAdditiveExpression();
@@ -1917,9 +1917,9 @@ public:
   public:
     ConditionBreakClosedShiftExpressionContext(antlr4::ParserRuleContext *parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
-    ConditionBreakClosedAdditiveExpressionContext *conditionBreakClosedAdditiveExpression();
     std::vector<ConditionClosedAdditiveExpressionContext *> conditionClosedAdditiveExpression();
     ConditionClosedAdditiveExpressionContext* conditionClosedAdditiveExpression(size_t i);
+    ConditionBreakClosedAdditiveExpressionContext *conditionBreakClosedAdditiveExpression();
     std::vector<antlr4::tree::TerminalNode *> SHL();
     antlr4::tree::TerminalNode* SHL(size_t i);
     ConditionBreakAdditiveExpressionContext *conditionBreakAdditiveExpression();
