@@ -227,6 +227,9 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::TypeRef> buildTypeRef(rx::Parser::TypeRefContext *ctx);
 
+    // [T; N] 的 T 走类型入口，N 走常量表达式入口。
+    std::unique_ptr<ast::ArrayTypeRef> buildArrayType(rx::Parser::ArrayTypeContext *ctx);
+
     std::unique_ptr<ast::SelfFunctionParam> buildSelfParam(rx::Parser::SelfParamContext *ctx);
     //普通参数
     std::unique_ptr<ast::FunctionParam> buildFunctionParam(rx::Parser::FunctionParamContext *ctx);

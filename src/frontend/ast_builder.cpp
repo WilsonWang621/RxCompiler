@@ -160,16 +160,19 @@ std::unique_ptr<ast::BlockExpr> ASTBuilder::buildBlock(rx::Parser::BlockExpressi
 std::unique_ptr<ast::LetStmt> ASTBuilder::buildLet(rx::Parser::LetStatementContext *ctx){
     auto *binding = ctx->identifierBinding();
 
-    if (ctx->typeRef() != nullptr) {
-        throw std::runtime_error("type annotations are not supported yet");
+    // 注解和初始化值分别构建；二者的类型是否匹配由语义分析检查。
+    std::unique_ptr<ast::TypeRef> type;
+    if (auto *typeCtx = ctx->typeRef()) {
+        type = buildTypeRef(typeCtx);
     }
 
     std::string name = binding->identifier()->getText();
     bool isMutable = binding->MUT() != nullptr;
-    //Recursively construct the initialization expression
     auto initializer = buildExpression(ctx->expression());
 
-    return std::make_unique<ast::LetStmt>(std::move(name), isMutable, std::move(initializer));
+    return std::make_unique<ast::LetStmt>(
+        std::move(name), isMutable, std::move(initializer), std::move(type)
+    );
 }
 
 ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
@@ -221,6 +224,8 @@ ast::ExprPtr ASTBuilder::buildLiteral(rx::Parser::LiteralExpressionContext *ctx)
 
 ast::ExprPtr ASTBuilder::buildArray(rx::Parser::ArrayExpressionContext *ctx){
     if(ctx->SEMI() != nullptr){
+        // [value; count] 保存一个元素值和次数，AST 阶段不展开重复元素。
+        // 元素走完整表达式入口，嵌套数组会再次进入 buildArray。
         auto value = buildExpression(ctx->expression(0));
         auto count = buildConstValue(ctx->constValue());
         return std::make_unique<ast::ArrayRepeatExpr>(
@@ -250,10 +255,8 @@ ast::ExprPtr ASTBuilder::buildConstValue(rx::Parser::ConstValueContext *ctx){
         );
     }
 
-    if(ctx->pathInExpression() != nullptr){ //用现成的build函数，不要试图自己重写
-        // return std::make_unique<ast::PathExpr>(
-        //     std::move(ctx->pathInExpression()->pathExprSegment());
-        // )
+    if(ctx->pathInExpression() != nullptr){
+        // N 保留为路径节点，这里不查符号表或替换成整数。
         return buildPath(ctx->pathInExpression());
     }
     if(ctx->INTEGER_LITERAL() != nullptr){
@@ -269,6 +272,7 @@ ast::ExprPtr ASTBuilder::buildConstValue(rx::Parser::ConstValueContext *ctx){
 }
 
 ast::ExprPtr ASTBuilder::buildMagnitude(rx::Parser::MagnitudeContext *ctx){
+    // 负号由 buildConstValue 包装；这里只构建负号后的操作数。
     if(ctx->INTEGER_LITERAL() != nullptr){
         return buildIntegerLiteral(ctx->INTEGER_LITERAL());
     }
@@ -347,6 +351,7 @@ ast::ExprPtr ASTBuilder::buildPostfix(rx::Parser::PostfixExpressionContext *ctx)
 
 ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx){
     if(ctx->LBRACKET() != nullptr){
+        // base 是前一个表达式的结果，expression 是 [] 内的下标。
         auto index = buildExpression(ctx->expression());
         return std::make_unique<ast::IndexExpr>(
             std::move(base),
@@ -514,7 +519,6 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
 
         return buildPath(ctx->pathInExpression());
     }
-    //对于高维数组，又会跳回到buildArray重新构建里层的低维数组  一直递归下去
     if (ctx->arrayExpression() != nullptr) {
         return buildArray(ctx->arrayExpression());
     }
@@ -1343,11 +1347,27 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContex
         );
     }
 
-    if (ctx->LPAREN() != nullptr && ctx->typeRef() == nullptr) {
+    if (ctx->arrayType() != nullptr) {
+        return buildArrayType(ctx->arrayType());
+    }
+
+    if (ctx->LPAREN() != nullptr) {
+        // (T) 只分组，不增加类型节点；没有内层类型时才是单元类型 ()。
+        if (ctx->typeRef() != nullptr) {
+            return buildTypeRef(ctx->typeRef());
+        }
         return std::make_unique<ast::SimpleTypeRef>("()");
     }
 
     throw std::runtime_error("this type form is not supported yet");
+}
+
+std::unique_ptr<ast::ArrayTypeRef> ASTBuilder::buildArrayType(rx::Parser::ArrayTypeContext *ctx) {
+    // [[T; N]; M] 的内层数组仍交给类型入口递归构建。
+    auto elementType = buildTypeRef(ctx->typeRef());
+    auto count = buildConstValue(ctx->constValue());
+
+    return std::make_unique<ast::ArrayTypeRef>(std::move(elementType), std::move(count));
 }
 
 std::unique_ptr<ast::SelfFunctionParam> ASTBuilder::buildSelfParam(rx::Parser::SelfParamContext *ctx) {

@@ -99,7 +99,6 @@ class ConstantItemBuilderTests(unittest.TestCase):
 
     def test_unsupported_type_and_item_forms_remain_diagnostic(self):
         for source, diagnostic in [
-            ("const N: [i32; 3] = OTHER;", "this type form is not supported yet"),
             ("const N: &i32 = OTHER;", "this type form is not supported yet"),
             ("struct S {}", "this item form is not supported yet"),
         ]:
