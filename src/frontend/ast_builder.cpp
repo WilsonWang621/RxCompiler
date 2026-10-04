@@ -86,8 +86,24 @@ std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
         return buildFunction(ctx->functionDefinition());
     }
 
+    if (ctx->constantItem() != nullptr) {
+        return buildConstItem(ctx->constantItem());
+    }
+
     throw std::runtime_error(
-        "minimal AST currently supports only function items"
+        "this item form is not supported yet"
+    );
+}
+
+std::unique_ptr<ast::ConstItem> ASTBuilder::buildConstItem(rx::Parser::ConstantItemContext *ctx) {
+    std::string name = ctx->identifier()->getText();
+    auto type = buildTypeRef(ctx->typeRef());
+    auto value = buildConstValue(ctx->constValue());
+
+    return std::make_unique<ast::ConstItem>(
+        std::move(name),
+        std::move(type),
+        std::move(value)
     );
 }
 
@@ -249,7 +265,7 @@ ast::ExprPtr ASTBuilder::buildConstValue(rx::Parser::ConstValueContext *ctx){
     if(ctx->LPAREN() != nullptr){
         return buildConstValue(ctx->constValue());
     }
-    throw std::runtime_error{"this type of constvalue about array size is not supported"};
+    throw std::runtime_error{"this constant value is not supported yet"};
 }
 
 ast::ExprPtr ASTBuilder::buildMagnitude(rx::Parser::MagnitudeContext *ctx){

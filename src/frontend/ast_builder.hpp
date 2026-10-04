@@ -12,6 +12,8 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::FunctionItem> buildFunction(rx::Parser::FunctionDefinitionContext *ctx);
 
+    std::unique_ptr<ast::ConstItem> buildConstItem(rx::Parser::ConstantItemContext *ctx);
+
     std::unique_ptr<ast::BlockExpr> buildBlock(rx::Parser::BlockExpressionContext *ctx);
 
     //1.1
@@ -26,7 +28,7 @@ class ASTBuilder final : public ParserBaseVisitor{
     // 根据分号区分 [a, b, ...] 和 [value; count]，共用一个数组入口。
     ast::ExprPtr buildArray(rx::Parser::ArrayExpressionContext *ctx);
 
-    // 保存数组重复次数的常量表达式，具体数值留给语义分析求出。
+    // 保存常量初始化值或数组重复次数的表达式，具体数值留给语义分析求出。
     ast::ExprPtr buildConstValue(rx::Parser::ConstValueContext *ctx);
 
     // constValue 中负号后的字面量、路径或括号内容。
