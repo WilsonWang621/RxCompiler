@@ -155,13 +155,52 @@ class ExpressionBuilderTests(unittest.TestCase):
                       ("Then:", "Block"), "Else: <none>")))
 
     def test_integer_literals_have_consistent_support(self):
-        diagnostic = "error: only unsuffixed decimal integer literals are supported for now\n"
-        for literal in ["0x10", "0b10", "0o10", "1_000", "3usize"]:
+        # Keep the exact spelling, including suffixes and magnitudes too large
+        # for a machine integer; semantic analysis will check their ranges.
+        for literal in ["0", "00042", "0x10", "0xDeAd_BeEf", "0x_fF_",
+                        "0b10", "0b_1010__", "0o10", "0o_7_0_",
+                        "1_000", "1__000_", "3i32", "3u32", "3isize", "3usize",
+                        "0xF_Fusize", "0b10_01u32", "0o7_7isize", "1_000_i32",
+                        "0x1_0000_0000_0000_0000usize", "18446744073709551616u32"]:
+            integer = "IntegerLiteral: " + literal
+            for expression, expected in [
+                (literal, integer),
+                ("[0; " + literal + "]", ("ArrayRepeatExpr",
+                    ("Value:", "IntegerLiteral: 0"), ("Count:", integer))),
+                ("[0; -(" + literal + ")]", ("ArrayRepeatExpr",
+                    ("Value:", "IntegerLiteral: 0"), ("Count:", ("UnaryExpr: -", integer)))),
+            ]:
+                with self.subTest(expression=expression):
+                    self.check_ast("let x = " + expression + ";", ("LetStmt: x", expected))
+
+    def test_integer_formats_in_all_entries(self):
+        for literal in ["0xDeAd", "1__000_", "42u32", "0xFF_usize",
+                        "0b_10_isize", "0o7_7i32"]:
+            self.check_expression_entries(literal, "IntegerLiteral: " + literal)
+
+        self.check_expression_entries("-0x8000_0000i32",
+            ("UnaryExpr: -", "IntegerLiteral: 0x8000_0000i32"))
+        self.check_expression_entries("[-0x80i32, 0b10u32, 0o7usize][0x0usize]",
+            ("IndexExpr", ("Base:", ("ArrayExpr",
+                ("UnaryExpr: -", "IntegerLiteral: 0x80i32"),
+                "IntegerLiteral: 0b10u32", "IntegerLiteral: 0o7usize")),
+             ("Index:", "IntegerLiteral: 0x0usize")))
+        self.check_expression_entries("[[0xA_u32; 0b10usize]; 0o3_usize]",
+            ("ArrayRepeatExpr", ("Value:", ("ArrayRepeatExpr",
+                ("Value:", "IntegerLiteral: 0xA_u32"),
+                ("Count:", "IntegerLiteral: 0b10usize"))),
+             ("Count:", "IntegerLiteral: 0o3_usize")))
+
+    def test_malformed_integer_literals_rejected(self):
+        for literal in ["0x", "0x___", "0xG", "0b", "0b_", "0b102",
+                        "0o", "0o_", "0o89", "123abc", "3u64", "3i64",
+                        "3usize_extra", "0X10", "0x10u64"]:
             for expression in [literal, "[0; " + literal + "]", "[0; -(" + literal + ")]"]:
                 with self.subTest(expression=expression):
                     result = self.compile("fn main() { let x = " + expression + "; }")
-                    self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertEqual(result.stderr, diagnostic)
+                    self.assertEqual(result.returncode, 1, result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn(": error:", result.stderr)
 
     def test_malformed_arrays_and_indices_rejected(self):
         for expression in ["[; 3]", "[1;]", "[1;; 2]", "[1; 2,]", "[1 2]",

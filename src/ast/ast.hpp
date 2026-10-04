@@ -137,7 +137,7 @@ public:
 
 
 class IntegerLiteralExpr final : public Expr{
-    std::string text_;
+    std::string text_;  // 完整字面量原文，包括进制前缀、下划线和类型后缀。
 
 public:
     IntegerLiteralExpr(std::string text):text_(std::move(text)){};
@@ -296,4 +296,3 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 }
-

@@ -13,19 +13,10 @@ void requireSingleChild(antlr4::ParserRuleContext *ctx) {
     }
 }
 
-// 字面量、常量次数和负号操作数共用相同的整数支持范围。
+// Lexer 已验证进制、下划线和类型后缀；各表达式入口共用节点构建。
 rx::ast::ExprPtr buildIntegerLiteral(antlr4::tree::TerminalNode *integer) {
-    std::string text = integer->getText();
-
-    // 本次仅支持由十进制数字组成的字面量。
-    // 暂不处理进制前缀、下划线和类型后缀。
-    if (text.empty() || text.find_first_not_of("0123456789") != std::string::npos) {
-        throw std::runtime_error(
-            "only unsuffixed decimal integer literals are supported for now"
-        );
-    }
-
-    return std::make_unique<rx::ast::IntegerLiteralExpr>(std::move(text));
+    // 保留完整原文，后续语义分析再按进制求值并处理类型后缀及范围。
+    return std::make_unique<rx::ast::IntegerLiteralExpr>(integer->getText());
 }
 
 // 优先级已由解析树确定；这里只把同一层的左结合运算依次折叠成 BinaryExpr。
