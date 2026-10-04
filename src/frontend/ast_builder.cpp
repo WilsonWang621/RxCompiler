@@ -350,6 +350,16 @@ ast::ExprPtr ASTBuilder::buildPostfix(rx::Parser::PostfixExpressionContext *ctx)
 }
 
 ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx){
+    if (auto *call = ctx->callArguments()) {
+        std::vector<ast::ExprPtr> arguments;
+        // 即使调用位于条件中，括号内的参数也使用普通 expression 规则。
+        for (auto *argument : call->expression()) {
+            arguments.push_back(buildExpression(argument));
+        }
+        // base 是此前完整的表达式；是否可调用及参数类型留给语义分析检查。
+        return std::make_unique<ast::CallExpr>(std::move(base), std::move(arguments));
+    }
+
     if(ctx->LBRACKET() != nullptr){
         // base 是前一个表达式的结果，expression 是 [] 内的下标。
         auto index = buildExpression(ctx->expression());

@@ -212,8 +212,8 @@ class ExpressionBuilderTests(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertIn(": error:", result.stderr)
 
-    def test_calls_and_member_access_remain_unsupported(self):
-        for expression in ["f()", "a.field", "a.method()", "a[i]()", "a[i].field"]:
+    def test_member_access_remains_unsupported(self):
+        for expression in ["a.field", "a.method()", "a[i].field", "f().field", "f().method()"]:
             for body in ["let x = " + expression + ";", expression + ";",
                          "while " + expression + " {}", "while break " + expression + " {}"]:
                 with self.subTest(expression=expression, body=body):

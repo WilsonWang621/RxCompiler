@@ -45,7 +45,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildPostfix(rx::Parser::PostfixExpressionContext *ctx);
 
-    // 各表达式入口共用后缀构建，将下标等操作包装到已有的 base 节点上。
+    // 各表达式入口共用后缀构建，将调用、下标包装到已有的 base 节点上。
     ast::ExprPtr buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx);
 
     ast::ExprPtr buildPrimary(rx::Parser::PrimaryExpressionContext *ctx);
