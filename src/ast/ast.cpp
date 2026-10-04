@@ -69,6 +69,12 @@ namespace rx::ast{
         }
         out << name_ << '\n';
 
+        if (type_ != nullptr) {
+            printIndent(out, indent + 1);
+            out << "Type:\n";
+            type_->dump(out, indent + 2);
+        }
+
         initializer_->dump(out, indent + 1);
     }
 
@@ -171,9 +177,22 @@ namespace rx::ast{
         block_->dump(out, indent + 2);
     }
 
-    void TypeRef::dump(std::ostream &out, int indent) const{
+    void SimpleTypeRef::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "TypeRef: " << type_ << '\n';
+    }
+
+    void ArrayTypeRef::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "ArrayTypeRef\n";
+
+        printIndent(out, indent + 1);
+        out << "ElementType:\n";
+        elementType_->dump(out, indent + 2);
+
+        printIndent(out, indent + 1);
+        out << "Count:\n";
+        count_->dump(out, indent + 2);
     }
 
     void NamedFunctionParam::dump(std::ostream &out, int indent) const{

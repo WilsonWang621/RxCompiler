@@ -1338,13 +1338,13 @@ std::unique_ptr<ast::FunctionParam> ASTBuilder::buildNamedParam(rx::Parser::Func
 
 std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContext *ctx){
     if(ctx->typePath() != nullptr){
-        return std::make_unique<ast::TypeRef>(
+        return std::make_unique<ast::SimpleTypeRef>(
             ctx->typePath()->getText()
         );
     }
 
     if (ctx->LPAREN() != nullptr && ctx->typeRef() == nullptr) {
-        return std::make_unique<ast::TypeRef>("()");
+        return std::make_unique<ast::SimpleTypeRef>("()");
     }
 
     throw std::runtime_error("this type form is not supported yet");

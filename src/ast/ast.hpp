@@ -54,11 +54,26 @@ public:
     ~FunctionParam() override = default;
 };
 
-class TypeRef final : public ASTNode{
+// 类型共用一个基类，参数、返回值和变量注解都持有 unique_ptr<TypeRef>。
+class TypeRef : public ASTNode {};
+
+// 类型路径与 () 沿用文本表示；数组类型单独保存内部结构。
+class SimpleTypeRef final : public TypeRef {
 private:
     std::string type_;
 public:
-    TypeRef(std::string type) : type_(std::move(type)){};
+    explicit SimpleTypeRef(std::string type) : type_(std::move(type)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class ArrayTypeRef final : public TypeRef {
+    std::unique_ptr<TypeRef> elementType_;  // 内层也可以是数组类型，表示多维数组。
+    ExprPtr count_;  // 保存 3、N 等表达式；长度求值与合法性检查留给语义分析。
+
+public:
+    ArrayTypeRef(std::unique_ptr<TypeRef> elementType, ExprPtr count)
+        : elementType_(std::move(elementType)), count_(std::move(count)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -132,9 +147,13 @@ class LetStmt final : public Stmt{
     std::string name_;
     bool isMutable_;
     ExprPtr initializer_;
+    std::unique_ptr<TypeRef> type_;  // nullptr 表示省略类型注解，后续需要类型推导。
 
 public:
-    LetStmt(std::string name, bool isMutable, ExprPtr initializer):name_(std::move(name)), isMutable_(isMutable), initializer_(std::move(initializer)){};
+    LetStmt(std::string name, bool isMutable, ExprPtr initializer,
+            std::unique_ptr<TypeRef> type = nullptr)
+        : name_(std::move(name)), isMutable_(isMutable), initializer_(std::move(initializer)),
+          type_(std::move(type)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
