@@ -78,6 +78,19 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+class ReferenceTypeRef final : public TypeRef {
+    std::unique_ptr<TypeRef> referent_;
+    bool isMutable_;
+    std::optional<std::string> lifetime_;
+
+public:
+    ReferenceTypeRef(std::unique_ptr<TypeRef> referent, bool isMutable,
+                     std::optional<std::string> lifetime = std::nullopt)
+        : referent_(std::move(referent)), isMutable_(isMutable), lifetime_(std::move(lifetime)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 class NamedFunctionParam final : public FunctionParam {
 private:
     std::string name_;
@@ -200,11 +213,22 @@ public:
 };
 
 class UnaryExpr final : public Expr{
-    std::string op_;
+    std::string op_;  // -、!、*、& 或 &mut；连续借用保存为嵌套节点。
     ExprPtr operand_;
 
 public:
     UnaryExpr(std::string op, ExprPtr operand): op_(std::move(op)), operand_(std::move(operand)){};
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class CastExpr final : public Expr {
+    ExprPtr value_;
+    std::unique_ptr<TypeRef> type_;  // as 的右侧是类型，不是值表达式。
+
+public:
+    CastExpr(ExprPtr value, std::unique_ptr<TypeRef> type)
+        : value_(std::move(value)), type_(std::move(type)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -225,6 +249,19 @@ private:
 
 public:
     AssignExpr(ExprPtr target, ExprPtr value): target_(std::move(target)), value_(std::move(value)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// 保留 += 等原始操作，避免改写成赋值加二元运算后重复求值 target。
+class CompoundAssignExpr final : public Expr {
+    std::string op_;
+    ExprPtr target_;
+    ExprPtr value_;
+
+public:
+    CompoundAssignExpr(std::string op, ExprPtr target, ExprPtr value)
+        : op_(std::move(op)), target_(std::move(target)), value_(std::move(value)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };

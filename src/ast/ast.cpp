@@ -103,6 +103,19 @@ namespace rx::ast{
         operand_->dump(out, indent + 1);
     }
 
+    void CastExpr::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "CastExpr\n";
+
+        printIndent(out, indent + 1);
+        out << "Value:\n";
+        value_->dump(out, indent + 2);
+
+        printIndent(out, indent + 1);
+        out << "Type:\n";
+        type_->dump(out, indent + 2);
+    }
+
     void PathExpr::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "PathExpr: ";
@@ -129,6 +142,13 @@ namespace rx::ast{
         out << "AssignExpr\n";
 
         // 第一个孩子是赋值目标，第二个孩子是右侧的值。
+        target_->dump(out, indent + 1);
+        value_->dump(out, indent + 1);
+    }
+
+    void CompoundAssignExpr::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "CompoundAssignExpr: " << op_ << '\n';
         target_->dump(out, indent + 1);
         value_->dump(out, indent + 1);
     }
@@ -180,6 +200,19 @@ namespace rx::ast{
     void SimpleTypeRef::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "TypeRef: " << type_ << '\n';
+    }
+
+    void ReferenceTypeRef::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "ReferenceTypeRef: &";
+        if (lifetime_) {
+            out << *lifetime_;
+        }
+        if (isMutable_) {
+            out << (lifetime_ ? " mut" : "mut");
+        }
+        out << '\n';
+        referent_->dump(out, indent + 1);
     }
 
     void ArrayTypeRef::dump(std::ostream &out, int indent) const {
