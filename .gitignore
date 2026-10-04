@@ -10,6 +10,9 @@
 # Python test runner
 __pycache__/
 
+# Local tests
+/tests/
+
 # Local files
 dev/
 *.local.*
