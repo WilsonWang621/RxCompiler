@@ -114,6 +114,19 @@ public:
     void dump(std::ostream &out, int indent) const override;
 };
 
+// const NAME: Type = value;：保存声明类型和未求值的常量表达式。
+class ConstItem final : public Item {
+    std::string name_;
+    std::unique_ptr<TypeRef> type_;
+    ExprPtr value_;
+
+public:
+    ConstItem(std::string name, std::unique_ptr<TypeRef> type, ExprPtr value)
+        : name_(std::move(name)), type_(std::move(type)), value_(std::move(value)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 //version 1.1
 class LetStmt final : public Stmt{
     std::string name_;

@@ -39,6 +39,19 @@ namespace rx::ast{
         body_->dump(out, indent + 1);
     }
 
+    void ConstItem::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "ConstItem: " << name_ << '\n';
+
+        printIndent(out, indent + 1);
+        out << "Type:\n";
+        type_->dump(out, indent + 2);
+
+        printIndent(out, indent + 1);
+        out << "Value:\n";
+        value_->dump(out, indent + 2);
+    }
+
     void Crate::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "Crate\n";
@@ -257,4 +270,3 @@ namespace rx::ast{
         index_->dump(out, indent + 2);
     }
 }
-
