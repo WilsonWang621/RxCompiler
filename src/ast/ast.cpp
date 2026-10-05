@@ -8,6 +8,11 @@ namespace{
     }
 }
 namespace rx::ast{
+    void EmptyStmt::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "EmptyStmt\n";
+    }
+
     void BlockExpr::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
         out << "Block\n";
@@ -83,6 +88,11 @@ namespace rx::ast{
         out << "IntegerLiteral: " << text_ << '\n';
     }
 
+    void UnitExpr::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "UnitExpr\n";
+    }
+
     void BooleanLiteralExpr::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "Boolean: " << (flag_ ? "true" : "false") << '\n';
@@ -116,7 +126,41 @@ namespace rx::ast{
         type_->dump(out, indent + 2);
     }
 
+    void TypeGenericArgument::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "TypeArgument\n";
+        type_->dump(out, indent + 1);
+    }
+
+    void LifetimeGenericArgument::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "LifetimeArgument: " << lifetime_ << '\n';
+    }
+
+    void PathSegment::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "PathSegment: " << name_ << '\n';
+        if (genericArgs_) {
+            printIndent(out, indent + 1);
+            out << "GenericArgs\n";
+            for (const auto &argument : *genericArgs_) {
+                argument->dump(out, indent + 2);
+            }
+        }
+    }
+
     void PathExpr::dump(std::ostream &out, int indent) const{
+        for (const auto &segment : segments_) {
+            if (segment->hasGenericArgs()) {
+                printIndent(out, indent);
+                out << "PathExpr\n";
+                for (const auto &pathSegment : segments_) {
+                    pathSegment->dump(out, indent + 1);
+                }
+                return;
+            }
+        }
+
         printIndent(out, indent);
         out << "PathExpr: ";
 
@@ -125,7 +169,7 @@ namespace rx::ast{
                 out << "::";
             }
 
-            out << segments_[i];
+            out << segments_[i]->name();
         }
 
         out << '\n'; 

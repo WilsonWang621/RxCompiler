@@ -55,6 +55,9 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildPath(rx::Parser::PathInExpressionContext *ctx);
 
+    // 类型与生命周期参数按源码顺序保存，挂在各自的路径段上。
+    ast::GenericArgs buildGenericArgs(rx::Parser::GenericArgsContext *ctx);
+
     ast::ExprPtr buildStatementExpression(rx::Parser::StatementExpressionContext *ctx);
 
     ast::ExprPtr buildStatementAdditive(rx::Parser::StatementAdditiveExpressionContext *ctx);

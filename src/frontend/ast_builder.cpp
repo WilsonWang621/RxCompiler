@@ -213,6 +213,11 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
         return std::make_unique<ast::ExprStmt>(std::move(expression));
     }
 
+    // 其他语句也可能带分号，先处理它们，再识别单独的空语句。
+    if (ctx->SEMI() != nullptr) {
+        return std::make_unique<ast::EmptyStmt>();
+    }
+
     throw std::runtime_error("this statement form is not supported yet");
 }
 
@@ -404,38 +409,44 @@ ast::ExprPtr ASTBuilder::buildPrimary(rx::Parser::PrimaryExpressionContext *ctx)
 ast::ExprPtr ASTBuilder::buildPath(rx::Parser::PathInExpressionContext *ctx){
     auto segmentContexts = ctx->pathExprSegment();
 
-    //just support single path for the time being
-    if(segmentContexts.size() != 1){
-        throw std::runtime_error{
-            "only single-segment paths are supported for now"
-        };
+    std::vector<std::unique_ptr<ast::PathSegment>> segments;
+    segments.reserve(segmentContexts.size());
+    // 按源码顺序保存每一段，具体名称解析留给语义分析。
+    for (auto *segmentCtx : segmentContexts) {
+        std::optional<ast::GenericArgs> genericArgs;
+        if (auto *argsCtx = segmentCtx->genericArgs()) {
+            genericArgs = buildGenericArgs(argsCtx);
+        }
+
+        auto *identCtx = segmentCtx->pathIdentSegment();
+
+        // 保留普通标识符、self 和 Self；其使用上下文由语义分析检查。
+        segments.push_back(std::make_unique<ast::PathSegment>(
+            identCtx->getText(), std::move(genericArgs)
+        ));
     }
-    auto segmentCtx = segmentContexts[0];
-    // 暂不支持带泛型参数的路径，例如 foo::<i32>。
-    if (segmentCtx->genericArgs() != nullptr) {
-        throw std::runtime_error(
-            "generic arguments in paths are not supported yet"
-        );
-    }
-
-    auto identCtx = segmentCtx->pathIdentSegment();
-
-    // pathIdentSegment 也允许 self 和 Self。
-    // 本关只接受普通 identifier。
-    if (identCtx->identifier() == nullptr) {
-        throw std::runtime_error(
-            "self and Self paths are not supported yet"
-        );
-    }
-
-    std::string name = identCtx->identifier()->getText();
-
-    std::vector<std::string> segments;
-    segments.push_back(std::move(name));
 
     return std::make_unique<ast::PathExpr>(
         std::move(segments)
     );
+}
+
+ast::GenericArgs ASTBuilder::buildGenericArgs(rx::Parser::GenericArgsContext *ctx) {
+    auto argumentContexts = ctx->genericArg();
+    ast::GenericArgs arguments;
+    arguments.reserve(argumentContexts.size());
+    for (auto *argumentCtx : argumentContexts) {
+        if (auto *lifetime = argumentCtx->lifetime()) {
+            arguments.push_back(std::make_unique<ast::LifetimeGenericArgument>(
+                lifetime->getText()
+            ));
+        } else {
+            arguments.push_back(std::make_unique<ast::TypeGenericArgument>(
+                buildTypeRef(argumentCtx->typeRef())
+            ));
+        }
+    }
+    return arguments;
 }
 
 ast::ExprPtr ASTBuilder::buildStatementExpression(rx::Parser::StatementExpressionContext *ctx){
@@ -558,9 +569,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
         auto *inner = ctx->expression();
 
         if (inner == nullptr) {
-            throw std::runtime_error(
-                "unit expression () is not supported yet"
-            );
+            return std::make_unique<ast::UnitExpr>();
         }
 
         return buildExpression(inner);
@@ -1239,7 +1248,7 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
     }
     if(ctx->LPAREN() != nullptr){
         if(ctx->expression() == nullptr){
-            throw std::runtime_error{"unit expression () is not supported yet"};
+            return std::make_unique<ast::UnitExpr>();
         }
         return buildExpression(ctx->expression());
     }

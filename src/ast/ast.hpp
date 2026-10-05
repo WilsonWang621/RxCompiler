@@ -22,6 +22,11 @@ using ItemPtr = std::unique_ptr<Item>;
 using ExprPtr = std::unique_ptr<Expr>;
 using StmtPtr = std::unique_ptr<Stmt>;
 
+class EmptyStmt final : public Stmt {
+public:
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 //the top floor
 class Crate : public ASTNode{
     std::vector<ItemPtr> items;
@@ -180,6 +185,11 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+// () 是单元值表达式；与空语句及类型注解中的 () 分开表示。
+class UnitExpr final : public Expr {
+public:
+    void dump(std::ostream &out, int indent = 0) const override;
+};
 
 class IntegerLiteralExpr final : public Expr{
     std::string text_;  // 完整字面量原文，包括进制前缀、下划线和类型后缀。
@@ -233,11 +243,53 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
-class PathExpr final : public Expr{
-    std::vector<std::string> segments_;
+class GenericArgument : public ASTNode {}; //泛型参数的公共基类
+
+class TypeGenericArgument final : public GenericArgument { //持有现有的 `TypeRef`，复用数组、引用等类型构建逻辑
+    std::unique_ptr<TypeRef> type_;
 
 public:
-    explicit PathExpr(std::vector<std::string> segments) : segments_(std::move(segments)) {}
+    explicit TypeGenericArgument(std::unique_ptr<TypeRef> type)
+        : type_(std::move(type)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class LifetimeGenericArgument final : public GenericArgument {
+    std::string lifetime_;
+
+public:
+    explicit LifetimeGenericArgument(std::string lifetime)
+        : lifetime_(std::move(lifetime)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+using GenericArgs = std::vector<std::unique_ptr<GenericArgument>>;
+
+// eg.Container::<'a, i32>::new::<u32>()
+class PathSegment final : public ASTNode { //每个路径段保存自己的名称和泛型参数，防止 `Container` 和 `new` 的参数混在一起。
+    std::string name_;
+    // nullopt 表示省略参数；空列表表示显式写了 ::<>。
+    std::optional<GenericArgs> genericArgs_;
+
+public:
+    explicit PathSegment(std::string name,
+                         std::optional<GenericArgs> genericArgs = std::nullopt)
+        : name_(std::move(name)), genericArgs_(std::move(genericArgs)) {}
+
+    const std::string &name() const { return name_; }
+    bool hasGenericArgs() const { return genericArgs_.has_value(); }
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class PathExpr final : public Expr{
+    std::vector<std::unique_ptr<PathSegment>> segments_;
+
+public:
+    explicit PathExpr(std::vector<std::unique_ptr<PathSegment>> segments)
+        : segments_(std::move(segments)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
