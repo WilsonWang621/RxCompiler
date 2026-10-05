@@ -21,6 +21,8 @@ fi
 
 printf '%s  %s\n' "$runtime_sha256" "$runtime_archive" | sha256sum --check --status
 
+# VERBOSE controls the test reporter; CMake treats even "false" as verbose.
+unset VERBOSE
 cmake -S "$project_dir" -B "$project_dir/target/build" \
     -DCMAKE_BUILD_TYPE=Release
 cmake --build "$project_dir/target/build" --parallel "${BUILD_JOBS:-2}"

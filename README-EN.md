@@ -1,123 +1,96 @@
-# Rx Compiler Template
+# Rx Compiler
 
-[![Tests](https://github.com/ACMClassCourse-2025/rx-compiler/actions/workflows/test.yml/badge.svg)](https://github.com/ACMClassCourse-2025/rx-compiler/actions/workflows/test.yml)
-[![Target: RV32IM](https://img.shields.io/badge/target-RV32IM-283272)](https://msyksphinz-self.github.io/riscv-isadoc/)
-[![Simulator: REIMU](https://img.shields.io/badge/simulator-REIMU-d73a49)](https://github.com/wanoful/REIMU)
 [English](README-EN.md) | [简体中文](README-ZH.md)
 
-> Replace this with your own README when you start working on your compiler.
+A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/) compiler implemented with C++17, ANTLR 4.13.2 and CMake. Development currently focuses on the frontend and AST construction.
 
-## Getting Started
+## Current status
 
-Welcome to the Rx Compiler course! This repository provides a template from which you can build your own compiler for [the Rx programming language](https://acmclasscourse-2025.github.io/rx-compiler-specification/). It includes official testcases, a test scaffold, and the G4 representation of Rx to get you started.
+- Lexing, parsing, syntax diagnostics and AST printing are wired up; AST construction support is being expanded incrementally.
+- `--stage semantic` currently parses the source, builds an AST and prints it to stdout. Name resolution, type checking and other semantic passes are not implemented yet.
+- LLVM IR generation is not implemented; `IR` in `config.mk` is empty.
+- `--stage codegen` retains its CLI entrypoint but reports that code generation is not implemented and exits with code 2. Optimization is also not implemented.
 
-We strongly recommend that you **fork this repository** instead of downloading zips, in case we need to update the official testcases. After forking your copy, clone it to your local machine.
+Negative official semantic cases expose the missing semantic checks. Some positive cases may also fail when their syntax is not supported by the AST builder. A successful result currently demonstrates acceptance by the frontend entrypoint, not complete semantic correctness.
 
-Initialize the testcases and [REIMU](https://github.com/wanoful/REIMU) submodules:
+## Building and running
 
-```sh
-git submodule update --init --recursive
-```
-
-Python 3, [xmake](https://xmake.io/) and any C++23 compiler is needed to build REIMU. Build REIMU separately from the project root before running tests:
-
-```sh
-xmake f -y -P vendor/REIMU -m release -o target/reimu
-xmake -y -P vendor/REIMU
-```
-
-Rerun these commands after updating the REIMU submodule.
-
-If you want to run default `rustc` test, install `rustup`, and run
-```sh
-rustup target add riscv32im-unknown-none-elf
-```
-
-IR tests also require **Clang 22**.
-
-## Overview
-
-In this course you can use **any language** to implement your compiler. Contact the TA if your language is not mainstream so that we can provide support for it on the Online Judge. For this reason, the template we provide here is **language-agnostic**. You will find:
-
-- Testcases under `tests/`. Official testcases reside under `tests/official` and is a git submodule. You may add your own testcases under `tests/custom`.
-- A test runner. The `Makefile` runs testcases using the compiler configured in `config.mk`. By default it uses your system rustc with the `riscv32im-unknown-none-elf` target and executes generated assembly in REIMU. **Replace the compiler commands in `config.mk` with your own compiler commands** to set up testing for your compiler. See [Running tests](#running-tests) for details.
-    - Some auxiliary files (such as the reference compiler helper code in `crates/rx`) help the default rustc produce assembly suitable for REIMU. Its `src/entry.rs` is compiled separately for each testcase and supplies the bare-metal entry point and `Box`/`Vec` imports. The library implements integer I/O through REIMU's libc, plus allocation and panic handling for bare-metal RV32 targets in `src/runtime.rs`. The reference IR and codegen commands request LLVM IR or assembly together with a static library so rustc performs whole-program LTO and includes the runtime in the generated program. The extra `{output}.a` is a build artifact. Codegen strips debug metadata with `scripts/strip_asm_debug.py`; the IR runner lowers `.ll` with Clang and strips the same unsupported metadata. In both paths, `RUN` receives assembly as `{output}`. These helpers can be removed when you replace the Rust compiler commands.
-- REIMU under `vendor/REIMU`, pinned as a git submodule. The `RUN` command in `config.mk` invokes it; the test runner does not depend on a particular simulator.
-- G4 grammar for Rx under `grammar/`. You may use it to generate the lexer and parser for your compiler.
-
-## Setting up the Makefile
-
-The Makefile is our unified entrypoint in accessing your compiler. You are expected to edit [`config.mk`](config.mk) and hook in your compiler commands. In practice, specify in these fields:
-
-| Command Name | Purpose |
-| --- | --- |
-| `BUILD` | Build your compiler once; may be empty. Must exit 0. May write shared runtime assembly to `{runtime}`. |
-| `SEMANTIC` | Check a complete program through semantic analysis. Exit 0 to accept or 1 to reject. |
-| `IR` | Write LLVM IR to `{output}` (`.ll`). The runner lowers it to RV32IM assembly with Clang before `RUN`. |
-| `CODEGEN` | Compile codegen and optimization testcases and write RV32IM assembly to `{output}` for the default `RUN`. |
-| `RUN` | Run assembly `{output}` with the captured `{runtime}`. Optional `{stdout}` and `{profile}` placeholders select per-execution output and profiling files. |
-
-For example, if your compiler supports `--stage` and `-o` and emits RV32IM assembly:
-
-```make
-BUILD = cargo build --release && cp runtime.s {runtime}
-SEMANTIC = ./target/release/compiler --stage semantic {source}
-IR = ./target/release/compiler --stage ir {source} -o {output}
-CODEGEN = ./target/release/compiler --stage codegen {source} -o {output}
-RUN = xmake run -P vendor/REIMU reimu -f {output},{runtime} -o {stdout} -p {profile} 1>&2
-```
-
-REIMU starts at the assembly's global `main` symbol and provides its supported libc functions. `-o {stdout}` saves the program's output for comparison, `-p {profile}` saves its cycle profile, and `1>&2` sends simulator status messages to the stderr log. Do not add `--silent` when collecting cycles: REIMU suppresses profiles in silent mode.
-
-Write any required runtime assembly to `{runtime}` during `BUILD`. Exported functions must follow the ILP32 calling convention. Leave the file empty if the runtime is embedded in the generated program.
-
-IR and codegen use the same testcases. IR uses your `IR` command, then the runner invokes Clang with `-S -x ir --target=riscv32-unknown-none-elf -march=rv32im -mabi=ilp32 -O0 -mllvm -riscv-no-aliases`; codegen uses the assembly produced by `CODEGEN` directly.
-
-## Testcases
-
-Tests reside in `tests/`, and are organized into subdirectories. We recommend you follow the "namespace:test-suite:testcase" pattern. For instance, `official:semantic:arrays` is the `arrays` testcase in the `semantic` test suite of the `official` namespace.
-
-Each testcase can have one or more source files, optional input and output files and a compulsory `manifest.json` file which defines the format of the testcase. See [the official schema](tests/official/manifest.schema.json) for details. The manifest's `stage` argument determines how the testcase runs: `semantic` uses `SEMANTIC`; each `codegen` entry runs both `IR` → Clang → `RUN` and `CODEGEN` → `RUN`; `optimization` uses `CODEGEN` followed by `RUN`.
-
-You are encouraged to add your own testcases under `tests/custom`. The runner will find them automatically.
-
-Requirements for each kind of testcase:
-
-| Testcase Type | Requirements |
-| --- | --- |
-| Semantic | The compiler must exit 0 or 1 to match `compilation_success`. Other exit codes, signals, and timeouts fail the case. |
-| IR | Compilation must create LLVM `.ll`; Clang must lower it successfully, and every runtime output must match. |
-| Codegen | Compilation must exit 0 and create `{output}`. Each `io` pair runs the artifact and the output must match the expected file. |
-| Optimization | Same as Codegen, with cycle reporting when `RUN` provides `{profile}`. |
-
-Testcases with type `lex` and `parse` will be skipped since we already provide the G4 grammar. Extend the Makefile if you want to DIY these stages.
-
-## Running tests
+Building requires a C++17 compiler, CMake, Make, curl and `sha256sum`. The test runner requires Python 3. Rust, Clang 22 and REIMU are not needed for the current frontend build or tests.
 
 Run from the project root:
 
 ```sh
-make test
-make test FILTER=official:semantic
-make test FILTER=official:codegen:arrays,official:optimization
-make test STAGE=ir
-make test STAGE=codegen FILTER=official:codegen:arrays
-make test STAGE=ir CLANG=clang-22
-make test FILTER=custom
-make test FILTER=official:optimization COMPILE_TIMEOUT=60 RUN_TIMEOUT=30
-make test VERBOSE=true
+make build
+# Optional: adjust build parallelism
+make build BUILD_JOBS=4
+./target/compiler --stage semantic path/to/program.rx
+./target/compiler --stage semantic path/to/program.rx --dump-tree
 ```
 
-Supported environment variables include:
+`scripts/build.sh` builds in Release mode using `target/build` and writes the executable to `target/compiler`. If the ANTLR C++ runtime 4.13.2 archive is missing from `.antlr/`, the script downloads it and verifies its SHA-256 checksum.
 
-- `FILTER`, which selects directories under `tests`, using `:` between folder names and `,` between selections. Omit `FILTER` or leave it empty to run all supported tests.
-- `STAGE`: optionally run only `semantic`, `ir`, `codegen`, or `optimization`. A directory `FILTER` for codegen fixtures includes both IR and codegen unless `STAGE` restricts it.
-- `CLANG`: LLVM IR lowering tool, default `clang-22`.
-- `VERBOSE=true`, which shows every test name and its duration instead of grouped progress. Defaults to `false`.
-- `COMPILE_TIMEOUT` and `RUN_TIMEOUT`, which override the default timeouts for compilation and execution.
+`--dump-tree` prints the ANTLR parse tree before the AST. Syntax errors exit with code 1. Invalid arguments, unreadable input files, AST construction exceptions and unimplemented stages exit with code 2.
 
-## CI/CD support
+After editing the grammar in `grammar/`, install Java and place the ANTLR 4.13.2 tool at `.antlr/antlr-4.13.2-complete.jar`, then run:
 
-This repo comes with a GitHub Actions workflow that runs tests on every push and pull request. You can inspect or modify the workflow in `.github/workflows/`. We advise turning it off while you develop the compiler and turning it back on when the compiler is ready for test-based development.
+```sh
+make generate-parser
+make build
+```
 
-To disable the test, rename `.github/workflows/test.yml` to `.github/workflows/test.yml.disabled`. GitHub Actions will only discover `*.yml` and `*.yaml` files.
+Generated C++ files are included in `generated/`. Ordinary builds do not require Java and do not regenerate the parser automatically.
+
+## Tests and configuration
+
+The root `Makefile` provides the common entrypoint. `config.mk` defines the compiler commands:
+
+| Setting | Current behavior |
+| --- | --- |
+| `COMPILER` | Defaults to `./target/compiler`; override to select another executable. |
+| `BUILD_COMPILER` | Defaults to `./scripts/build.sh`; used by `make build` and test builds. |
+| `BUILD` | Builds the C++ compiler once and leaves an empty `{runtime}` file. |
+| `SEMANTIC` | Invokes the current parsing and AST construction entrypoint. |
+| `IR` | Empty; selecting IR tests prompts you to configure this command first. |
+| `CODEGEN` | Invokes the custom compiler's codegen entrypoint, which currently reports that it is not implemented. |
+| `RUN` | Retains the REIMU command for future IR, codegen and optimization tests. |
+
+`make test` defaults to `STAGE=semantic`. `scripts/test.py` discovers manifests under `tests/` and invokes the project's C++ compiler:
+
+```sh
+make test
+make test FILTER=official:semantic:arrays
+make test FILTER=custom VERBOSE=true
+make test COMPILE_TIMEOUT=60
+```
+
+Logs are saved under `target/tests/run-*`. `FILTER` uses colons between directory levels and commas between selections; an empty value selects all directories. `VERBOSE=true` reports individual cases. Compilation and execution timeouts default to 30 and 10 seconds; override them with `COMPILE_TIMEOUT` and `RUN_TIMEOUT`. `PYTHON` defaults to `python3`.
+
+The test directory is currently ignored by `.gitignore`, so local tests are not included in an ordinary clone. Supply official or custom fixtures before running tests. Each fixture directory uses `manifest.json` to declare sources, stages, expected compilation results and optional input/output pairs; see the local `tests/official/manifest.schema.json` for the format. Official `lex` and `parse` entries are still skipped by the runner.
+
+When the local AST regression suites are available in `tests/ast/`, run:
+
+```sh
+make test-ast
+```
+
+This builds the compiler and runs the `test_*builder.py` suites, comparing AST output. These local suites are also not tracked in Git. A missing directory produces an explicit error.
+
+Set `STAGE` explicitly to `semantic`, `ir`, `codegen` or `optimization`; `STAGE=` selects all stages. IR is currently unconfigured, and codegen/optimization cannot pass yet. Enable them as their implementations become available. The template's Rust reference helpers remain in `crates/rx`, but default test commands now use the custom compiler.
+
+## Future runtime setup
+
+Before validating generated programs, initialize and build REIMU separately. It requires Python 3, xmake and a C++23 compiler:
+
+```sh
+git submodule update --init --recursive
+xmake f -y -P vendor/REIMU -m release -o target/reimu
+xmake -y -P vendor/REIMU
+```
+
+Rebuild after updating REIMU. IR tests additionally require Clang 22, with `CLANG=clang-22` by default. The IR command must write `.ll`, which the runner lowers to RV32IM assembly. Codegen must write RV32IM assembly directly. Both paths then invoke `RUN`.
+
+REIMU starts at the global `main` symbol. The `{stdout}` and `{profile}` placeholders in `RUN` save program output and cycle statistics. Write shared runtime assembly to `{runtime}` during `BUILD`; exported functions must follow the ILP32 calling convention. Keep `-p {profile}` and avoid `--silent` when collecting cycles.
+
+## CI
+
+During frontend and AST development, the test workflow is named `.github/workflows/test.yml.disabled`, so pushes and pull requests do not trigger it. Its dependencies and command now target the C++ build and semantic tests. Rename it back to `test.yml` once semantic regression results are stable and test fixtures are available in CI. Add Clang, xmake and REIMU build steps when enabling IR or backend tests.
