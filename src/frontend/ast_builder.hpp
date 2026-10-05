@@ -48,12 +48,18 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildPostfix(rx::Parser::PostfixExpressionContext *ctx);
 
-    // 各表达式入口共用后缀构建，将调用、下标包装到已有的 base 节点上。
+    // 各表达式入口共用后缀构建，按源码顺序包装已有的 base 节点。
     ast::ExprPtr buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx);
+
+    ast::ExprPtr buildDotSuffix(ast::ExprPtr base, rx::Parser::DotSuffixContext *ctx);
+
+    std::vector<ast::ExprPtr> buildCallArguments(rx::Parser::CallArgumentsContext *ctx);
 
     ast::ExprPtr buildPrimary(rx::Parser::PrimaryExpressionContext *ctx);
 
     ast::ExprPtr buildPath(rx::Parser::PathInExpressionContext *ctx);
+
+    std::unique_ptr<ast::PathSegment> buildPathSegment(rx::Parser::PathExprSegmentContext *ctx);
 
     // 类型与生命周期参数按源码顺序保存，挂在各自的路径段上。
     ast::GenericArgs buildGenericArgs(rx::Parser::GenericArgsContext *ctx);

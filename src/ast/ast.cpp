@@ -175,6 +175,30 @@ namespace rx::ast{
         out << '\n'; 
     }
 
+    void FieldExpr::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "FieldExpr: " << field_ << '\n';
+        printIndent(out, indent + 1);
+        out << "Base:\n";
+        base_->dump(out, indent + 2);
+    }
+
+    void MethodCallExpr::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "MethodCallExpr\n";
+        printIndent(out, indent + 1);
+        out << "Receiver:\n";
+        receiver_->dump(out, indent + 2);
+        printIndent(out, indent + 1);
+        out << "Method:\n";
+        method_->dump(out, indent + 2);
+        printIndent(out, indent + 1);
+        out << "Arguments:\n";
+        for (const auto &argument : arguments_) {
+            argument->dump(out, indent + 2);
+        }
+    }
+
     void ExprStmt::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "ExprStmt:\n";

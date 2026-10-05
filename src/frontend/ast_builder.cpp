@@ -367,11 +367,7 @@ ast::ExprPtr ASTBuilder::buildPostfix(rx::Parser::PostfixExpressionContext *ctx)
 
 ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx){
     if (auto *call = ctx->callArguments()) {
-        std::vector<ast::ExprPtr> arguments;
-        // 即使调用位于条件中，括号内的参数也使用普通 expression 规则。
-        for (auto *argument : call->expression()) {
-            arguments.push_back(buildExpression(argument));
-        }
+        auto arguments = buildCallArguments(call);
         // base 是此前完整的表达式；是否可调用及参数类型留给语义分析检查。
         return std::make_unique<ast::CallExpr>(std::move(base), std::move(arguments));
     }
@@ -385,7 +381,34 @@ ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::Postf
         );
     }
 
+    if (auto *dot = ctx->dotSuffix()) {
+        return buildDotSuffix(std::move(base), dot);
+    }
+
     throw std::runtime_error{"this post suffix is not supported yet"};
+}
+
+ast::ExprPtr ASTBuilder::buildDotSuffix(ast::ExprPtr base, rx::Parser::DotSuffixContext *ctx) {
+    if (auto *call = ctx->callArguments()) {
+        auto method = buildPathSegment(ctx->pathExprSegment());
+        auto arguments = buildCallArguments(call);
+        // receiver 单独保存，自动借用、解引用和方法查找留给语义分析。
+        return std::make_unique<ast::MethodCallExpr>(
+            std::move(base), std::move(method), std::move(arguments)
+        );
+    }
+    return std::make_unique<ast::FieldExpr>(
+        std::move(base), ctx->identifier()->getText()
+    );
+}
+
+std::vector<ast::ExprPtr> ASTBuilder::buildCallArguments(rx::Parser::CallArgumentsContext *ctx) {
+    std::vector<ast::ExprPtr> arguments;
+    // 即使调用位于条件中，括号内的参数也使用普通 expression 规则。
+    for (auto *argument : ctx->expression()) {
+        arguments.push_back(buildExpression(argument));
+    }
+    return arguments;
 }
 
 ast::ExprPtr ASTBuilder::buildPrimary(rx::Parser::PrimaryExpressionContext *ctx) {
@@ -413,21 +436,22 @@ ast::ExprPtr ASTBuilder::buildPath(rx::Parser::PathInExpressionContext *ctx){
     segments.reserve(segmentContexts.size());
     // 按源码顺序保存每一段，具体名称解析留给语义分析。
     for (auto *segmentCtx : segmentContexts) {
-        std::optional<ast::GenericArgs> genericArgs;
-        if (auto *argsCtx = segmentCtx->genericArgs()) {
-            genericArgs = buildGenericArgs(argsCtx);
-        }
-
-        auto *identCtx = segmentCtx->pathIdentSegment();
-
-        // 保留普通标识符、self 和 Self；其使用上下文由语义分析检查。
-        segments.push_back(std::make_unique<ast::PathSegment>(
-            identCtx->getText(), std::move(genericArgs)
-        ));
+        segments.push_back(buildPathSegment(segmentCtx));
     }
 
     return std::make_unique<ast::PathExpr>(
         std::move(segments)
+    );
+}
+
+std::unique_ptr<ast::PathSegment> ASTBuilder::buildPathSegment(rx::Parser::PathExprSegmentContext *ctx) {
+    std::optional<ast::GenericArgs> genericArgs;
+    if (auto *argsCtx = ctx->genericArgs()) {
+        genericArgs = buildGenericArgs(argsCtx);
+    }
+    // 保留普通标识符、self 和 Self；其使用上下文由语义分析检查。
+    return std::make_unique<ast::PathSegment>(
+        ctx->pathIdentSegment()->getText(), std::move(genericArgs)
     );
 }
 
@@ -496,14 +520,14 @@ ast::ExprPtr ASTBuilder::buildStatementUnary(rx::Parser::StatementUnaryExpressio
 }
 
 ast::ExprPtr ASTBuilder::buildStatementPostfix(rx::Parser::StatementPostfixExpressionContext *ctx) {
-    if (ctx->expressionWithBlock() != nullptr ||
-        ctx->dotSuffix() != nullptr) {
-        throw std::runtime_error(
-            "block-leading or postfix expressions are not supported yet"
-        );
+    ast::ExprPtr result;
+    if (auto *withBlock = ctx->expressionWithBlock()) {
+        // 以块开头的语句先处理直接的点后缀，再处理后续调用、下标和点后缀。
+        result = buildDotSuffix(buildExpressionWithBlock(withBlock), ctx->dotSuffix());
+    } else {
+        result = buildNonBlockPrimary(ctx->nonBlockPrimary());
     }
 
-    auto result = buildNonBlockPrimary(ctx->nonBlockPrimary());
     for (auto *suffix : ctx->postfixSuffix()) {
         result = buildPostfixSuffix(std::move(result), suffix);
     }

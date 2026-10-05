@@ -294,6 +294,28 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+class FieldExpr final : public Expr {
+    ExprPtr base_;
+    std::string field_;
+
+public:
+    FieldExpr(ExprPtr base, std::string field): base_(std::move(base)), field_(std::move(field)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class MethodCallExpr final : public Expr {
+    ExprPtr receiver_;
+    std::unique_ptr<PathSegment> method_;
+    std::vector<ExprPtr> arguments_;
+
+public:
+    MethodCallExpr(ExprPtr receiver, std::unique_ptr<PathSegment> method, std::vector<ExprPtr> arguments)
+        : receiver_(std::move(receiver)), method_(std::move(method)), arguments_(std::move(arguments)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 class AssignExpr final : public Expr {
 private:
     ExprPtr target_;
