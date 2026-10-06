@@ -17,6 +17,50 @@ namespace{
     }
 }
 namespace rx::ast{
+    void UsePath::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "UsePath: " << (isAbsolute_ ? "absolute" : "relative") << '\n';
+        for (const auto &segment : segments_) {
+            printIndent(out, indent + 1);
+            out << "UsePathSegment: " << segment << '\n';
+        }
+    }
+
+    void NamedUseTree::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "NamedUseTree\n";
+        path_->dump(out, indent + 1);
+        if (alias_) {
+            printIndent(out, indent + 1);
+            out << "Alias: " << *alias_ << '\n';
+        }
+    }
+
+    void GlobUseTree::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "GlobUseTree\n";
+        if (path_ != nullptr) {
+            path_->dump(out, indent + 1);
+        }
+    }
+
+    void GroupUseTree::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "GroupUseTree\n";
+        if (path_ != nullptr) {
+            path_->dump(out, indent + 1);
+        }
+        for (const auto &tree : trees_) {
+            tree->dump(out, indent + 1);
+        }
+    }
+
+    void UseItem::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "UseItem\n";
+        tree_->dump(out, indent + 1);
+    }
+
     void LifetimeParam::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
         out << "LifetimeParam: " << lifetime_ << '\n';

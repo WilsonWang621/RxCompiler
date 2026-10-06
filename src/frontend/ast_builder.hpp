@@ -10,6 +10,12 @@ class ASTBuilder final : public ParserBaseVisitor{
     // 各 build 入口适配不同的 Context；优先级由语法决定，公共构建逻辑在 cpp 中复用。
     std::unique_ptr<ast::Item> buildItem(rx::Parser::ItemContext *ctx);
 
+    std::unique_ptr<ast::UseItem> buildUseItem(rx::Parser::UseDeclarationContext *ctx);
+
+    std::unique_ptr<ast::UseTree> buildUseTree(rx::Parser::UseTreeContext *ctx);
+
+    std::unique_ptr<ast::UsePath> buildUsePath(rx::Parser::UsePathContext *ctx);
+
     std::unique_ptr<ast::FunctionItem> buildFunction(rx::Parser::FunctionDefinitionContext *ctx);
 
     std::unique_ptr<ast::ConstItem> buildConstItem(rx::Parser::ConstantItemContext *ctx);

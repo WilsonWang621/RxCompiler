@@ -104,6 +104,10 @@ std::unique_ptr<ast::Crate> ASTBuilder::build(rx::Parser::CrateContext *ctx){
 }
     
 std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
+    if (ctx->useDeclaration() != nullptr) {
+        return buildUseItem(ctx->useDeclaration());
+    }
+
     if (ctx->functionDefinition() != nullptr) {
         return buildFunction(ctx->functionDefinition());
     }
@@ -122,6 +126,50 @@ std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
 
     throw std::runtime_error(
         "this item form is not supported yet"
+    );
+}
+
+std::unique_ptr<ast::UseItem> ASTBuilder::buildUseItem(rx::Parser::UseDeclarationContext *ctx) {
+    return std::make_unique<ast::UseItem>(buildUseTree(ctx->useTree()));
+}
+
+std::unique_ptr<ast::UseTree> ASTBuilder::buildUseTree(rx::Parser::UseTreeContext *ctx) {
+    auto path = buildUsePath(ctx->usePath());
+    // 没有 usePath 的 ::* 和 ::{...} 仍然带有显式的绝对路径前缀。
+    if (path == nullptr && ctx->PATHSEP() != nullptr) {
+        path = std::make_unique<ast::UsePath>(true, std::vector<std::string>{});
+    }
+
+    if (ctx->STAR() != nullptr) {
+        return std::make_unique<ast::GlobUseTree>(std::move(path));
+    }
+
+    if (ctx->LBRACE() != nullptr) {
+        std::vector<std::unique_ptr<ast::UseTree>> trees;
+        for (auto *treeCtx : ctx->useTree()) {
+            trees.push_back(buildUseTree(treeCtx));
+        }
+        return std::make_unique<ast::GroupUseTree>(std::move(path), std::move(trees));
+    }
+
+    std::optional<std::string> alias;
+    if (ctx->AS() != nullptr) {
+        alias = ctx->identifier() != nullptr ? ctx->identifier()->getText() : "_";
+    }
+    return std::make_unique<ast::NamedUseTree>(std::move(path), std::move(alias));
+}
+
+std::unique_ptr<ast::UsePath> ASTBuilder::buildUsePath(rx::Parser::UsePathContext *ctx) {
+    if (ctx == nullptr) {
+        return nullptr;
+    }
+
+    std::vector<std::string> segments;
+    for (auto *segmentCtx : ctx->usePathSegment()) {
+        segments.push_back(segmentCtx->getText());
+    }
+    return std::make_unique<ast::UsePath>(
+        ctx->getStart()->getType() == rx::Parser::PATHSEP, std::move(segments)
     );
 }
 

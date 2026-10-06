@@ -39,6 +39,64 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+// use 路径不含泛型参数，逐段保存名称和开头的 ::，供后续名称解析使用。
+class UsePath final : public ASTNode {
+    bool isAbsolute_;
+    std::vector<std::string> segments_;
+
+public:
+    UsePath(bool isAbsolute, std::vector<std::string> segments)
+        : isAbsolute_(isAbsolute), segments_(std::move(segments)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class UseTree : public ASTNode {
+protected:
+    // nullptr 表示没有前缀；::* 和 ::{} 使用绝对路径的空段列表。
+    std::unique_ptr<UsePath> path_;
+
+    explicit UseTree(std::unique_ptr<UsePath> path) : path_(std::move(path)) {}
+};
+
+// path 或 path as name；nullopt 表示没有 as，"_" 表示匿名导入。
+class NamedUseTree final : public UseTree {
+    std::optional<std::string> alias_;
+
+public:
+    NamedUseTree(std::unique_ptr<UsePath> path, std::optional<std::string> alias)
+        : UseTree(std::move(path)), alias_(std::move(alias)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class GlobUseTree final : public UseTree {
+public:
+    explicit GlobUseTree(std::unique_ptr<UsePath> path) : UseTree(std::move(path)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// 不展开或合并嵌套导入，保留空分组、分组边界和子树的源码顺序。
+class GroupUseTree final : public UseTree {
+    std::vector<std::unique_ptr<UseTree>> trees_;
+
+public:
+    GroupUseTree(std::unique_ptr<UsePath> path, std::vector<std::unique_ptr<UseTree>> trees)
+        : UseTree(std::move(path)), trees_(std::move(trees)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class UseItem final : public Item {
+    std::unique_ptr<UseTree> tree_;
+
+public:
+    explicit UseItem(std::unique_ptr<UseTree> tree) : tree_(std::move(tree)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 class BlockExpr final : public Expr{
     std::vector<StmtPtr> stmts_;
     ExprPtr tail_;
