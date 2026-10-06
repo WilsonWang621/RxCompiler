@@ -14,6 +14,22 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::ConstItem> buildConstItem(rx::Parser::ConstantItemContext *ctx);
 
+    std::unique_ptr<ast::StructItem> buildStructItem(rx::Parser::StructDefinitionContext *ctx);
+
+    std::unique_ptr<ast::StructField> buildStructField(rx::Parser::StructFieldContext *ctx);
+
+    std::unique_ptr<ast::ImplItem> buildInherentImpl(rx::Parser::InherentImplContext *ctx);
+
+    std::unique_ptr<ast::GenericParams> buildGenericParams(rx::Parser::GenericParamsContext *ctx);
+
+    std::unique_ptr<ast::LifetimeParam> buildLifetimeParam(rx::Parser::LifetimeParamContext *ctx);
+
+    std::unique_ptr<ast::OuterAttribute> buildOuterAttribute(rx::Parser::OuterAttributeContext *ctx);
+
+    std::unique_ptr<ast::WhereClause> buildWhereClause(rx::Parser::WhereClauseContext *ctx);
+
+    std::unique_ptr<ast::WherePredicate> buildWherePredicate(rx::Parser::WhereClauseItemContext *ctx);
+
     std::unique_ptr<ast::BlockExpr> buildBlock(rx::Parser::BlockExpressionContext *ctx);
 
     //1.1
@@ -57,7 +73,12 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildPrimary(rx::Parser::PrimaryExpressionContext *ctx);
 
-    ast::ExprPtr buildPath(rx::Parser::PathInExpressionContext *ctx);
+    std::unique_ptr<ast::PathExpr> buildPath(rx::Parser::PathInExpressionContext *ctx);
+
+    std::unique_ptr<ast::StructExpr> buildStructExpr(rx::Parser::PathInExpressionContext *pathCtx,
+                                                 rx::Parser::StructExprFieldsContext *fieldsCtx);
+
+    std::unique_ptr<ast::StructExprField> buildStructExprField(rx::Parser::StructExprFieldContext *ctx);
 
     std::unique_ptr<ast::PathSegment> buildPathSegment(rx::Parser::PathExprSegmentContext *ctx);
 

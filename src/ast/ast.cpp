@@ -6,8 +6,56 @@ namespace{
             out << " ";
         }
     }
+
+    void dumpLifetimeBounds(std::ostream &out, int indent, const std::vector<std::string> &bounds) {
+        printIndent(out, indent);
+        out << "Bounds:\n";
+        for (const auto &bound : bounds) {
+            printIndent(out, indent + 1);
+            out << "LifetimeBound: " << bound << '\n';
+        }
+    }
 }
 namespace rx::ast{
+    void LifetimeParam::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "LifetimeParam: " << lifetime_ << '\n';
+        if (bounds_) {
+            dumpLifetimeBounds(out, indent + 1, *bounds_);
+        }
+    }
+
+    void GenericParams::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "GenericParams\n";
+        for (const auto &lifetime : lifetimes_) {
+            lifetime->dump(out, indent + 1);
+        }
+    }
+
+    void LifetimeWherePredicate::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "LifetimeWherePredicate: " << lifetime_ << '\n';
+        dumpLifetimeBounds(out, indent + 1, bounds_);
+    }
+
+    void TypeWherePredicate::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "TypeWherePredicate\n";
+        printIndent(out, indent + 1);
+        out << "Type:\n";
+        type_->dump(out, indent + 2);
+        dumpLifetimeBounds(out, indent + 1, bounds_);
+    }
+
+    void WhereClause::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "WhereClause\n";
+        for (const auto &predicate : predicates_) {
+            predicate->dump(out, indent + 1);
+        }
+    }
+
     void EmptyStmt::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
         out << "EmptyStmt\n";
@@ -28,6 +76,10 @@ namespace rx::ast{
         printIndent(out, indent);
         out << "Function: " << name_ << '\n';
 
+        if (genericParams_ != nullptr) {
+            genericParams_->dump(out, indent + 1);
+        }
+
         if (selfParam_ != nullptr) {
             selfParam_->dump(out, indent + 1);
         }
@@ -40,6 +92,9 @@ namespace rx::ast{
             printIndent(out, indent + 1);
             out << "ReturnType\n";
             returnType_->dump(out, indent + 2);
+        }
+        if (whereClause_ != nullptr) {
+            whereClause_->dump(out, indent + 1);
         }
         body_->dump(out, indent + 1);
     }
@@ -55,6 +110,57 @@ namespace rx::ast{
         printIndent(out, indent + 1);
         out << "Value:\n";
         value_->dump(out, indent + 2);
+    }
+
+    void StructField::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "StructField: " << name_ << '\n';
+        type_->dump(out, indent + 1);
+    }
+
+    void DeriveAttribute::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "DeriveAttribute\n";
+        for (const auto &name : names_) {
+            printIndent(out, indent + 1);
+            out << "DeriveName: " << name << '\n';
+        }
+    }
+
+    void StructItem::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "StructItem: " << name_ << '\n';
+        for (const auto &attribute : attributes_) {
+            attribute->dump(out, indent + 1);
+        }
+        if (genericParams_ != nullptr) {
+            genericParams_->dump(out, indent + 1);
+        }
+        if (whereClause_ != nullptr) {
+            whereClause_->dump(out, indent + 1);
+        }
+        for (const auto &field : fields_) {
+            field->dump(out, indent + 1);
+        }
+    }
+
+    void ImplItem::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "ImplItem\n";
+        if (genericParams_ != nullptr) {
+            genericParams_->dump(out, indent + 1);
+        }
+        printIndent(out, indent + 1);
+        out << "Type:\n";
+        type_->dump(out, indent + 2);
+        if (whereClause_ != nullptr) {
+            whereClause_->dump(out, indent + 1);
+        }
+        printIndent(out, indent + 1);
+        out << "Items:\n";
+        for (const auto &item : items_) {
+            item->dump(out, indent + 2);
+        }
     }
 
     void Crate::dump(std::ostream &out, int indent) const{
@@ -173,6 +279,25 @@ namespace rx::ast{
         }
 
         out << '\n'; 
+    }
+
+    void StructExprField::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "StructExprField: " << name_ << '\n';
+        value_->dump(out, indent + 1);
+    }
+
+    void StructExpr::dump(std::ostream &out, int indent) const {
+        printIndent(out, indent);
+        out << "StructExpr\n";
+        printIndent(out, indent + 1);
+        out << "Path:\n";
+        path_->dump(out, indent + 2);
+        printIndent(out, indent + 1);
+        out << "Fields:\n";
+        for (const auto &field : fields_) {
+            field->dump(out, indent + 2);
+        }
     }
 
     void FieldExpr::dump(std::ostream &out, int indent) const {

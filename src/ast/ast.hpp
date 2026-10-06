@@ -96,6 +96,64 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+// nullopt 表示省略冒号；空列表表示显式写了 'a: 而没有约束。
+class LifetimeParam final : public ASTNode {
+    std::string lifetime_;
+    std::optional<std::vector<std::string>> bounds_;
+
+public:
+    LifetimeParam(std::string lifetime, std::optional<std::vector<std::string>> bounds)
+        : lifetime_(std::move(lifetime)), bounds_(std::move(bounds)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// 当前文法中的泛型形参只有生命周期；显式 <> 保存为空节点。
+class GenericParams final : public ASTNode {
+    std::vector<std::unique_ptr<LifetimeParam>> lifetimes_;
+
+public:
+    explicit GenericParams(std::vector<std::unique_ptr<LifetimeParam>> lifetimes)
+        : lifetimes_(std::move(lifetimes)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// where 子句的两类约束分别保存生命周期或类型，不在 AST 构建时验证约束。
+class WherePredicate : public ASTNode {};
+
+class LifetimeWherePredicate final : public WherePredicate {
+    std::string lifetime_;
+    std::vector<std::string> bounds_;
+
+public:
+    LifetimeWherePredicate(std::string lifetime, std::vector<std::string> bounds)
+        : lifetime_(std::move(lifetime)), bounds_(std::move(bounds)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class TypeWherePredicate final : public WherePredicate {
+    std::unique_ptr<TypeRef> type_;
+    std::vector<std::string> bounds_;
+
+public:
+    TypeWherePredicate(std::unique_ptr<TypeRef> type, std::vector<std::string> bounds)
+        : type_(std::move(type)), bounds_(std::move(bounds)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class WhereClause final : public ASTNode {
+    std::vector<std::unique_ptr<WherePredicate>> predicates_;
+
+public:
+    explicit WhereClause(std::vector<std::unique_ptr<WherePredicate>> predicates)
+        : predicates_(std::move(predicates)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
 class NamedFunctionParam final : public FunctionParam {
 private:
     std::string name_;
@@ -134,15 +192,19 @@ private:
     std::unique_ptr<SelfFunctionParam> selfParam_;   // nullptr 表示没有 self 参数
     std::vector<std::unique_ptr<FunctionParam>> parameters_;  // 可以为空，表示没有普通参数
     std::unique_ptr<TypeRef> returnType_;  // nullptr 表示没有写 -> 类型
+    std::unique_ptr<WhereClause> whereClause_;  // nullptr 表示没有 where 子句。
     std::unique_ptr<BlockExpr> body_;
+    std::unique_ptr<GenericParams> genericParams_;
 public:
     FunctionItem(
         std::string name,
         std::unique_ptr<SelfFunctionParam> selfParam,
         std::vector<std::unique_ptr<FunctionParam>> parameters,
         std::unique_ptr<TypeRef> returnType,
-        std::unique_ptr<BlockExpr> body
-    ): name_(std::move(name)), selfParam_(std::move(selfParam)), parameters_(std::move(parameters)), returnType_(std::move(returnType)), body_(std::move(body)) {}
+        std::unique_ptr<BlockExpr> body,
+        std::unique_ptr<WhereClause> whereClause = nullptr,
+        std::unique_ptr<GenericParams> genericParams = nullptr
+    ): name_(std::move(name)), selfParam_(std::move(selfParam)), parameters_(std::move(parameters)), returnType_(std::move(returnType)), whereClause_(std::move(whereClause)), body_(std::move(body)), genericParams_(std::move(genericParams)) {}
 
     void dump(std::ostream &out, int indent) const override;
 };
@@ -156,6 +218,67 @@ class ConstItem final : public Item {
 public:
     ConstItem(std::string name, std::unique_ptr<TypeRef> type, ExprPtr value)
         : name_(std::move(name)), type_(std::move(type)), value_(std::move(value)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// 字段类型复用 TypeRef；字段重名和类型是否合法留给语义分析。
+class StructField final : public ASTNode {
+    std::string name_;
+    std::unique_ptr<TypeRef> type_;
+
+public:
+    StructField(std::string name, std::unique_ptr<TypeRef> type)
+        : name_(std::move(name)), type_(std::move(type)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class OuterAttribute : public ASTNode {};
+
+// #[derive(...)]：保留每个属性的边界，以及名称的顺序、重复和空列表。
+class DeriveAttribute final : public OuterAttribute {
+    std::vector<std::string> names_;
+
+public:
+    explicit DeriveAttribute(std::vector<std::string> names)
+        : names_(std::move(names)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// struct NAME { field: Type, ... }：按源码顺序保存字段，也允许空字段列表。
+class StructItem final : public Item {
+    std::string name_;
+    std::vector<std::unique_ptr<StructField>> fields_;
+    std::unique_ptr<WhereClause> whereClause_;
+    std::vector<std::unique_ptr<OuterAttribute>> attributes_;
+    std::unique_ptr<GenericParams> genericParams_;
+
+public:
+    StructItem(std::string name, std::vector<std::unique_ptr<StructField>> fields,
+               std::unique_ptr<WhereClause> whereClause = nullptr,
+               std::vector<std::unique_ptr<OuterAttribute>> attributes = {},
+               std::unique_ptr<GenericParams> genericParams = nullptr)
+        : name_(std::move(name)), fields_(std::move(fields)), whereClause_(std::move(whereClause)),
+          attributes_(std::move(attributes)), genericParams_(std::move(genericParams)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// impl 是独立的声明节点，按源码顺序保存方法和关联常量。
+class ImplItem final : public Item {
+    std::unique_ptr<TypeRef> type_;
+    std::vector<ItemPtr> items_;
+    std::unique_ptr<WhereClause> whereClause_;
+    std::unique_ptr<GenericParams> genericParams_;
+
+public:
+    ImplItem(std::unique_ptr<TypeRef> type, std::vector<ItemPtr> items,
+             std::unique_ptr<WhereClause> whereClause,
+             std::unique_ptr<GenericParams> genericParams)
+        : type_(std::move(type)), items_(std::move(items)), whereClause_(std::move(whereClause)),
+          genericParams_(std::move(genericParams)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -290,6 +413,29 @@ class PathExpr final : public Expr{
 public:
     explicit PathExpr(std::vector<std::unique_ptr<PathSegment>> segments)
         : segments_(std::move(segments)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+class StructExprField final : public ASTNode {
+    std::string name_;
+    ExprPtr value_;
+
+public:
+    StructExprField(std::string name, ExprPtr value)
+        : name_(std::move(name)), value_(std::move(value)) {}
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// 路径保留泛型实参；初始化字段按源码顺序保存，供后续确定求值顺序。
+class StructExpr final : public Expr {
+    std::unique_ptr<PathExpr> path_;
+    std::vector<std::unique_ptr<StructExprField>> fields_;
+
+public:
+    StructExpr(std::unique_ptr<PathExpr> path, std::vector<std::unique_ptr<StructExprField>> fields)
+        : path_(std::move(path)), fields_(std::move(fields)) {}
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
