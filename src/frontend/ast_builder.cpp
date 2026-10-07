@@ -77,12 +77,9 @@ rx::ast::ExprPtr buildUnaryOperator(rx::Parser::UnaryOperatorContext *ctx, rx::a
 
 template<class Context>
 std::unique_ptr<rx::ast::TypeRef> buildReferenceType(Context *ctx, std::unique_ptr<rx::ast::TypeRef> referent) {
-    std::optional<std::string> lifetime;
-    if (ctx->lifetime() != nullptr) {
-        lifetime = ctx->lifetime()->getText();
-    }
+    // lifetime 已通过语法检查，在 AST 阶段丢弃；保留引用层数和可变性。
     referent = std::make_unique<rx::ast::ReferenceTypeRef>(
-        std::move(referent), ctx->MUT() != nullptr, std::move(lifetime)
+        std::move(referent), ctx->MUT() != nullptr
     );
     // 类型中的 && 同样表示两层引用，生命周期与 mut 只属于内层。
     if (ctx->ANDAND() != nullptr) {
@@ -98,16 +95,16 @@ namespace rx::frontend{
 std::unique_ptr<ast::Crate> ASTBuilder::build(rx::Parser::CrateContext *ctx){
     auto result = std::make_unique<ast::Crate>();
     for(auto itemCtx : ctx->item()){
+        // 课程规范允许解析后丢弃整条 use，不产生空的 Item 节点。
+        if (itemCtx->useDeclaration() != nullptr) {
+            continue;
+        }
         result->addItem(buildItem(itemCtx));
     }
     return result;
 }
     
 std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
-    if (ctx->useDeclaration() != nullptr) {
-        return buildUseItem(ctx->useDeclaration());
-    }
-
     if (ctx->functionDefinition() != nullptr) {
         return buildFunction(ctx->functionDefinition());
     }
@@ -129,50 +126,6 @@ std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
     );
 }
 
-std::unique_ptr<ast::UseItem> ASTBuilder::buildUseItem(rx::Parser::UseDeclarationContext *ctx) {
-    return std::make_unique<ast::UseItem>(buildUseTree(ctx->useTree()));
-}
-
-std::unique_ptr<ast::UseTree> ASTBuilder::buildUseTree(rx::Parser::UseTreeContext *ctx) {
-    auto path = buildUsePath(ctx->usePath());
-    // 没有 usePath 的 ::* 和 ::{...} 仍然带有显式的绝对路径前缀。
-    if (path == nullptr && ctx->PATHSEP() != nullptr) {
-        path = std::make_unique<ast::UsePath>(true, std::vector<std::string>{});
-    }
-
-    if (ctx->STAR() != nullptr) {
-        return std::make_unique<ast::GlobUseTree>(std::move(path));
-    }
-
-    if (ctx->LBRACE() != nullptr) {
-        std::vector<std::unique_ptr<ast::UseTree>> trees;
-        for (auto *treeCtx : ctx->useTree()) {
-            trees.push_back(buildUseTree(treeCtx));
-        }
-        return std::make_unique<ast::GroupUseTree>(std::move(path), std::move(trees));
-    }
-
-    std::optional<std::string> alias;
-    if (ctx->AS() != nullptr) {
-        alias = ctx->identifier() != nullptr ? ctx->identifier()->getText() : "_";
-    }
-    return std::make_unique<ast::NamedUseTree>(std::move(path), std::move(alias));
-}
-
-std::unique_ptr<ast::UsePath> ASTBuilder::buildUsePath(rx::Parser::UsePathContext *ctx) {
-    if (ctx == nullptr) {
-        return nullptr;
-    }
-
-    std::vector<std::string> segments;
-    for (auto *segmentCtx : ctx->usePathSegment()) {
-        segments.push_back(segmentCtx->getText());
-    }
-    return std::make_unique<ast::UsePath>(
-        ctx->getStart()->getType() == rx::Parser::PATHSEP, std::move(segments)
-    );
-}
-
 std::unique_ptr<ast::ConstItem> ASTBuilder::buildConstItem(rx::Parser::ConstantItemContext *ctx) {
     std::string name = ctx->identifier()->getText();
     auto type = buildTypeRef(ctx->typeRef());
@@ -186,14 +139,12 @@ std::unique_ptr<ast::ConstItem> ASTBuilder::buildConstItem(rx::Parser::ConstantI
 }
 
 std::unique_ptr<ast::StructItem> ASTBuilder::buildStructItem(rx::Parser::StructDefinitionContext *ctx) {
-    auto genericParams = buildGenericParams(ctx->genericParams());
 
     std::vector<std::unique_ptr<ast::OuterAttribute>> attributes;
     for (auto *attributeCtx : ctx->outerAttribute()) {
         attributes.push_back(buildOuterAttribute(attributeCtx));
     }
 
-    auto whereClause = buildWhereClause(ctx->whereClause());
 
     std::vector<std::unique_ptr<ast::StructField>> fields;
     for (auto *fieldCtx : ctx->structField()) {
@@ -201,8 +152,7 @@ std::unique_ptr<ast::StructItem> ASTBuilder::buildStructItem(rx::Parser::StructD
     }
 
     return std::make_unique<ast::StructItem>(
-        ctx->identifier()->getText(), std::move(fields), std::move(whereClause), std::move(attributes),
-        std::move(genericParams)
+        ctx->identifier()->getText(), std::move(fields), std::move(attributes)
     );
 }
 
@@ -212,9 +162,7 @@ std::unique_ptr<ast::StructField> ASTBuilder::buildStructField(rx::Parser::Struc
 }
 
 std::unique_ptr<ast::ImplItem> ASTBuilder::buildInherentImpl(rx::Parser::InherentImplContext *ctx) {
-    auto genericParams = buildGenericParams(ctx->genericParams());
     auto type = buildTypeRef(ctx->typeRef());
-    auto whereClause = buildWhereClause(ctx->whereClause());
     std::vector<ast::ItemPtr> items;
     for (auto *itemCtx : ctx->associatedItem()) {
         if (itemCtx->constantItem() != nullptr) {
@@ -224,30 +172,8 @@ std::unique_ptr<ast::ImplItem> ASTBuilder::buildInherentImpl(rx::Parser::Inheren
         }
     }
     return std::make_unique<ast::ImplItem>(
-        std::move(type), std::move(items), std::move(whereClause), std::move(genericParams)
+        std::move(type), std::move(items)
     );
-}
-
-std::unique_ptr<ast::GenericParams> ASTBuilder::buildGenericParams(rx::Parser::GenericParamsContext *ctx) {
-    if (ctx == nullptr) {
-        return nullptr;
-    }
-    std::vector<std::unique_ptr<ast::LifetimeParam>> lifetimes;
-    for (auto *lifetimeCtx : ctx->lifetimeParam()) {
-        lifetimes.push_back(buildLifetimeParam(lifetimeCtx));
-    }
-    return std::make_unique<ast::GenericParams>(std::move(lifetimes));
-}
-
-std::unique_ptr<ast::LifetimeParam> ASTBuilder::buildLifetimeParam(rx::Parser::LifetimeParamContext *ctx) {
-    std::optional<std::vector<std::string>> bounds;
-    if (auto *boundsCtx = ctx->lifetimeBounds()) {
-        bounds.emplace();
-        for (auto *boundCtx : boundsCtx->lifetime()) {
-            bounds->push_back(boundCtx->getText());
-        }
-    }
-    return std::make_unique<ast::LifetimeParam>(ctx->lifetime()->getText(), std::move(bounds));
 }
 
 std::unique_ptr<ast::OuterAttribute> ASTBuilder::buildOuterAttribute(rx::Parser::OuterAttributeContext *ctx) {
@@ -259,42 +185,8 @@ std::unique_ptr<ast::OuterAttribute> ASTBuilder::buildOuterAttribute(rx::Parser:
     return std::make_unique<ast::DeriveAttribute>(std::move(names));
 }
 
-std::unique_ptr<ast::WhereClause> ASTBuilder::buildWhereClause(rx::Parser::WhereClauseContext *ctx) {
-    // 没写 where 与显式的空 where 子句分别表示为 nullptr 和空节点。
-    if (ctx == nullptr) {
-        return nullptr;
-    }
-
-    std::vector<std::unique_ptr<ast::WherePredicate>> predicates;
-    for (auto *predicateCtx : ctx->whereClauseItem()) {
-        predicates.push_back(buildWherePredicate(predicateCtx));
-    }
-    return std::make_unique<ast::WhereClause>(std::move(predicates));
-}
-
-std::unique_ptr<ast::WherePredicate> ASTBuilder::buildWherePredicate(rx::Parser::WhereClauseItemContext *ctx) {
-    std::vector<std::string> bounds;
-    if (ctx->lifetime() != nullptr) {
-        for (auto *boundCtx : ctx->lifetimeBounds()->lifetime()) {
-            bounds.push_back(boundCtx->getText());
-        }
-        return std::make_unique<ast::LifetimeWherePredicate>(
-            ctx->lifetime()->getText(), std::move(bounds)
-        );
-    }
-
-    if (auto *boundsCtx = ctx->typeParamBounds()) {
-        for (auto *boundCtx : boundsCtx->lifetime()) {
-            bounds.push_back(boundCtx->getText());
-        }
-    }
-    auto type = buildTypeRef(ctx->typeRef());
-    return std::make_unique<ast::TypeWherePredicate>(std::move(type), std::move(bounds));
-}
-
 std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::FunctionDefinitionContext *ctx){
     std::string name = ctx->identifier()->getText();
-    auto genericParams = buildGenericParams(ctx->genericParams());
 
     std::unique_ptr<ast::SelfFunctionParam> selfParam;
     std::vector<std::unique_ptr<ast::FunctionParam>> parameters;
@@ -317,7 +209,6 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
         returnType = buildTypeRef(ctx->typeRef());
     }
 
-    auto whereClause = buildWhereClause(ctx->whereClause());
     auto body = buildBlock(ctx->blockExpression());
 
     return std::make_unique<ast::FunctionItem>(
@@ -326,17 +217,23 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
         std::move(parameters),
         std::move(returnType),
         std::move(body),
-        std::move(whereClause),
-        std::move(genericParams)
+        ctx->genericParams() != nullptr && !ctx->genericParams()->lifetimeParam().empty()
     );
 }
 
 std::unique_ptr<ast::BlockExpr> ASTBuilder::buildBlock(rx::Parser::BlockExpressionContext *ctx){
     auto block = std::make_unique<ast::BlockExpr>();
 
-    for (auto statementCtx : ctx->statement()) {
-        auto statement = buildStatement(statementCtx);
-        block->addStatement(std::move(statement));
+    const auto statements = ctx->statement();
+    for (std::size_t i = 0; i < statements.size(); ++i) {
+        auto *statementCtx = statements[i];
+        // 文法把带块表达式也解析为 statement；末尾且没有分号时实际是尾表达式。
+        if (i + 1 == statements.size() && ctx->statementExpression() == nullptr &&
+            statementCtx->expressionWithBlock() != nullptr && statementCtx->SEMI() == nullptr) {
+            block->setTail(buildExpressionWithBlock(statementCtx->expressionWithBlock()));
+        } else {
+            block->addStatement(buildStatement(statementCtx));
+        }
     }
     if( ctx->statementExpression() != nullptr){
         block->setTail(buildStatementExpression(ctx->statementExpression()));
@@ -377,7 +274,7 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
     if(ctx->expressionWithBlock() != nullptr){
         // 带块表达式共用一个分派入口，在语句位置统一包装为 ExprStmt。
         auto expression = buildExpressionWithBlock(ctx->expressionWithBlock());
-        return std::make_unique<ast::ExprStmt>(std::move(expression));
+        return std::make_unique<ast::ExprStmt>(std::move(expression), ctx->SEMI() != nullptr);
     }
 
     // 其他语句也可能带分号，先处理它们，再识别单独的空语句。
@@ -630,32 +527,43 @@ std::unique_ptr<ast::StructExprField> ASTBuilder::buildStructExprField(rx::Parse
 }
 
 std::unique_ptr<ast::PathSegment> ASTBuilder::buildPathSegment(rx::Parser::PathExprSegmentContext *ctx) {
-    std::optional<ast::GenericArgs> genericArgs;
-    if (auto *argsCtx = ctx->genericArgs()) {
-        genericArgs = buildGenericArgs(argsCtx);
-    }
+    auto genericArgs = buildGenericArgs(ctx->genericArgs());
     // 保留普通标识符、self 和 Self；其使用上下文由语义分析检查。
     return std::make_unique<ast::PathSegment>(
         ctx->pathIdentSegment()->getText(), std::move(genericArgs)
     );
 }
 
-ast::GenericArgs ASTBuilder::buildGenericArgs(rx::Parser::GenericArgsContext *ctx) {
-    auto argumentContexts = ctx->genericArg();
+std::optional<ast::GenericArgs> ASTBuilder::buildGenericArgs(rx::Parser::GenericArgsContext *ctx) {
+    if (ctx == nullptr) {
+        return std::nullopt;
+    }
+    const auto argumentContexts = ctx->genericArg();
     ast::GenericArgs arguments;
-    arguments.reserve(argumentContexts.size());
     for (auto *argumentCtx : argumentContexts) {
-        if (auto *lifetime = argumentCtx->lifetime()) {
-            arguments.push_back(std::make_unique<ast::LifetimeGenericArgument>(
-                lifetime->getText()
-            ));
-        } else {
-            arguments.push_back(std::make_unique<ast::TypeGenericArgument>(
-                buildTypeRef(argumentCtx->typeRef())
-            ));
+        if (argumentCtx->typeRef() != nullptr) {
+            arguments.push_back(buildTypeRef(argumentCtx->typeRef()));
         }
     }
+    // 显式 <> 仍可参与具体类型实参的合法性检查；仅含 lifetime 则与省略等价。
+    if (!argumentContexts.empty() && arguments.empty()) {
+        return std::nullopt;
+    }
     return arguments;
+}
+
+std::unique_ptr<ast::PathSegment> ASTBuilder::buildTypePathSegment(rx::Parser::TypePathSegmentContext *ctx) {
+    return std::make_unique<ast::PathSegment>(
+        ctx->pathIdentSegment()->getText(), buildGenericArgs(ctx->genericArgs())
+    );
+}
+
+std::unique_ptr<ast::TypePathRef> ASTBuilder::buildTypePath(rx::Parser::TypePathContext *ctx) {
+    std::vector<std::unique_ptr<ast::PathSegment>> segments;
+    for (auto *segmentCtx : ctx->typePathSegment()) {
+        segments.push_back(buildTypePathSegment(segmentCtx));
+    }
+    return std::make_unique<ast::TypePathRef>(std::move(segments));
 }
 
 ast::ExprPtr ASTBuilder::buildStatementExpression(rx::Parser::StatementExpressionContext *ctx){
@@ -1803,9 +1711,7 @@ std::unique_ptr<ast::FunctionParam> ASTBuilder::buildNamedParam(rx::Parser::Func
 
 std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContext *ctx){
     if(ctx->typePath() != nullptr){
-        return std::make_unique<ast::SimpleTypeRef>(
-            ctx->typePath()->getText()
-        );
+        return buildTypePath(ctx->typePath());
     }
 
     if (auto *reference = ctx->referenceType()) {
@@ -1821,7 +1727,7 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContex
         if (ctx->typeRef() != nullptr) {
             return buildTypeRef(ctx->typeRef());
         }
-        return std::make_unique<ast::SimpleTypeRef>("()");
+        return std::make_unique<ast::UnitTypeRef>();
     }
 
     throw std::runtime_error("this type form is not supported yet");
@@ -1831,7 +1737,7 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildClosedCastType(rx::Parser::Closed
     // closedCastType 约束类型的结尾，避免把后续 < 或 << 读成泛型参数。
     if (ctx->LPAREN() != nullptr) {
         return ctx->typeRef() != nullptr ? buildTypeRef(ctx->typeRef())
-                                        : std::make_unique<ast::SimpleTypeRef>("()");
+                                        : std::make_unique<ast::UnitTypeRef>();
     }
     if (ctx->arrayType() != nullptr) {
         return buildArrayType(ctx->arrayType());
@@ -1839,8 +1745,15 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildClosedCastType(rx::Parser::Closed
     if (ctx->closedCastType() != nullptr) {
         return buildReferenceType(ctx, buildClosedCastType(ctx->closedCastType()));
     }
-    // 与普通类型路径一致，保留完整路径文本，名称解析留给语义分析。
-    return std::make_unique<ast::SimpleTypeRef>(ctx->getText());
+    // closedCastType 的最后一段由独立的 pathIdentSegment/genericArgs 表示。
+    std::vector<std::unique_ptr<ast::PathSegment>> segments;
+    for (auto *segmentCtx : ctx->typePathSegment()) {
+        segments.push_back(buildTypePathSegment(segmentCtx));
+    }
+    segments.push_back(std::make_unique<ast::PathSegment>(
+        ctx->pathIdentSegment()->getText(), buildGenericArgs(ctx->genericArgs())
+    ));
+    return std::make_unique<ast::TypePathRef>(std::move(segments));
 }
 
 std::unique_ptr<ast::ArrayTypeRef> ASTBuilder::buildArrayType(rx::Parser::ArrayTypeContext *ctx) {
@@ -1855,31 +1768,7 @@ std::unique_ptr<ast::SelfFunctionParam> ASTBuilder::buildSelfParam(rx::Parser::S
     bool isReference = ctx->AMP() != nullptr;
     bool isMutable = ctx->MUT() != nullptr;
 
-    std::optional<std::string> lifetime;
-
-    if (ctx->lifetime() != nullptr) {
-        lifetime = ctx->lifetime()->getText();
-    }
-
-    return std::make_unique<ast::SelfFunctionParam>(
-        isReference,
-        isMutable,
-        std::move(lifetime)
-    );
+    return std::make_unique<ast::SelfFunctionParam>(isReference, isMutable);
 }
 
-std::unique_ptr<ast::FunctionParam> ASTBuilder::buildFunctionParam(rx::Parser::FunctionParamContext *ctx){
-    auto bindings = ctx->identifierBinding();
-    auto identifier = bindings->identifier();
-
-    std::string name = identifier->getText();
-    bool isMutable = bindings->MUT();
-    auto type = buildTypeRef(ctx->typeRef());
-
-    return std::make_unique<ast::NamedFunctionParam>(
-        std::move(name),
-        isMutable,
-        std::move(type)
-    );
-}
 }

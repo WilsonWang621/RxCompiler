@@ -21,6 +21,7 @@ struct Options {
 
 void print_usage(std::ostream &stream, std::string_view program) {
   stream << "Usage:\n"
+         << "  " << program << " --stage ast <source>\n"
          << "  " << program << " --stage semantic <source>\n"
          << "  " << program << " --stage codegen <source> -o <output>\n"
          << "Options:\n"
@@ -59,8 +60,8 @@ bool parse_options(int argc, char **argv, Options &options) {
     }
   }
 
-  if (options.stage != "semantic" && options.stage != "codegen") {
-    std::cerr << "error: --stage must be semantic or codegen\n";
+  if (options.stage != "ast" && options.stage != "semantic" && options.stage != "codegen") {
+    std::cerr << "error: --stage must be ast, semantic or codegen\n";
     return false;
   }
   if (options.source.empty()) {
@@ -122,7 +123,7 @@ int run(const Options &options) {
     std::cout << tree->toStringTree(&parser) << '\n';
   }
 
-  if (options.stage == "semantic") {
+  if (options.stage == "ast" || options.stage == "semantic") {
     // The semantic-analysis passes will be invoked here once implemented.
     rx::frontend::ASTBuilder builder;
 

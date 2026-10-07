@@ -29,70 +29,14 @@ public:
 
 //the top floor
 class Crate : public ASTNode{
-    std::vector<ItemPtr> items;
+    std::vector<ItemPtr> items_;
 
 public:
     void addItem(ItemPtr item){
-        items.push_back(std::move(item));
+        items_.push_back(std::move(item));
     }
 
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-// use 路径不含泛型参数，逐段保存名称和开头的 ::，供后续名称解析使用。
-class UsePath final : public ASTNode {
-    bool isAbsolute_;
-    std::vector<std::string> segments_;
-
-public:
-    UsePath(bool isAbsolute, std::vector<std::string> segments)
-        : isAbsolute_(isAbsolute), segments_(std::move(segments)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-class UseTree : public ASTNode {
-protected:
-    // nullptr 表示没有前缀；::* 和 ::{} 使用绝对路径的空段列表。
-    std::unique_ptr<UsePath> path_;
-
-    explicit UseTree(std::unique_ptr<UsePath> path) : path_(std::move(path)) {}
-};
-
-// path 或 path as name；nullopt 表示没有 as，"_" 表示匿名导入。
-class NamedUseTree final : public UseTree {
-    std::optional<std::string> alias_;
-
-public:
-    NamedUseTree(std::unique_ptr<UsePath> path, std::optional<std::string> alias)
-        : UseTree(std::move(path)), alias_(std::move(alias)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-class GlobUseTree final : public UseTree {
-public:
-    explicit GlobUseTree(std::unique_ptr<UsePath> path) : UseTree(std::move(path)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-// 不展开或合并嵌套导入，保留空分组、分组边界和子树的源码顺序。
-class GroupUseTree final : public UseTree {
-    std::vector<std::unique_ptr<UseTree>> trees_;
-
-public:
-    GroupUseTree(std::unique_ptr<UsePath> path, std::vector<std::unique_ptr<UseTree>> trees)
-        : UseTree(std::move(path)), trees_(std::move(trees)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-class UseItem final : public Item {
-    std::unique_ptr<UseTree> tree_;
-
-public:
-    explicit UseItem(std::unique_ptr<UseTree> tree) : tree_(std::move(tree)) {}
+    const auto &items() const { return items_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -109,6 +53,9 @@ public:
         tail_ = std::move(tail);
     }
 
+    const auto &statements() const { return stmts_; }
+    const Expr *tail() const { return tail_.get(); }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -120,13 +67,9 @@ public:
 // 类型共用一个基类，参数、返回值和变量注解都持有 unique_ptr<TypeRef>。
 class TypeRef : public ASTNode {};
 
-// 类型路径与 () 沿用文本表示；数组类型单独保存内部结构。
-class SimpleTypeRef final : public TypeRef {
-private:
-    std::string type_;
+// () 是单元类型；命名类型和类型实参由 TypePathRef 结构化保存。
+class UnitTypeRef final : public TypeRef {
 public:
-    explicit SimpleTypeRef(std::string type) : type_(std::move(type)) {}
-
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -138,76 +81,22 @@ public:
     ArrayTypeRef(std::unique_ptr<TypeRef> elementType, ExprPtr count)
         : elementType_(std::move(elementType)), count_(std::move(count)) {}
 
+    const TypeRef &elementType() const { return *elementType_; }
+    const Expr &count() const { return *count_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
 class ReferenceTypeRef final : public TypeRef {
     std::unique_ptr<TypeRef> referent_;
     bool isMutable_;
-    std::optional<std::string> lifetime_;
 
 public:
-    ReferenceTypeRef(std::unique_ptr<TypeRef> referent, bool isMutable,
-                     std::optional<std::string> lifetime = std::nullopt)
-        : referent_(std::move(referent)), isMutable_(isMutable), lifetime_(std::move(lifetime)) {}
+    ReferenceTypeRef(std::unique_ptr<TypeRef> referent, bool isMutable)
+        : referent_(std::move(referent)), isMutable_(isMutable) {}
 
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-// nullopt 表示省略冒号；空列表表示显式写了 'a: 而没有约束。
-class LifetimeParam final : public ASTNode {
-    std::string lifetime_;
-    std::optional<std::vector<std::string>> bounds_;
-
-public:
-    LifetimeParam(std::string lifetime, std::optional<std::vector<std::string>> bounds)
-        : lifetime_(std::move(lifetime)), bounds_(std::move(bounds)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-// 当前文法中的泛型形参只有生命周期；显式 <> 保存为空节点。
-class GenericParams final : public ASTNode {
-    std::vector<std::unique_ptr<LifetimeParam>> lifetimes_;
-
-public:
-    explicit GenericParams(std::vector<std::unique_ptr<LifetimeParam>> lifetimes)
-        : lifetimes_(std::move(lifetimes)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-// where 子句的两类约束分别保存生命周期或类型，不在 AST 构建时验证约束。
-class WherePredicate : public ASTNode {};
-
-class LifetimeWherePredicate final : public WherePredicate {
-    std::string lifetime_;
-    std::vector<std::string> bounds_;
-
-public:
-    LifetimeWherePredicate(std::string lifetime, std::vector<std::string> bounds)
-        : lifetime_(std::move(lifetime)), bounds_(std::move(bounds)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-class TypeWherePredicate final : public WherePredicate {
-    std::unique_ptr<TypeRef> type_;
-    std::vector<std::string> bounds_;
-
-public:
-    TypeWherePredicate(std::unique_ptr<TypeRef> type, std::vector<std::string> bounds)
-        : type_(std::move(type)), bounds_(std::move(bounds)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-class WhereClause final : public ASTNode {
-    std::vector<std::unique_ptr<WherePredicate>> predicates_;
-
-public:
-    explicit WhereClause(std::vector<std::unique_ptr<WherePredicate>> predicates)
-        : predicates_(std::move(predicates)) {}
+    const TypeRef &referent() const { return *referent_; }
+    bool isMutable() const { return isMutable_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -222,6 +111,10 @@ public:
     NamedFunctionParam(std::string name, bool isMutable, std::unique_ptr<TypeRef> type)
         : name_(std::move(name)), isMutable_(isMutable), type_(std::move(type)) {}
 
+    const std::string &name() const { return name_; }
+    bool isMutable() const { return isMutable_; }
+    const TypeRef &type() const { return *type_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -229,17 +122,13 @@ class SelfFunctionParam final : public FunctionParam {
 private:
     bool isReference_;
     bool isMutable_;
-    std::optional<std::string> lifetime_;
 
 public:
-    SelfFunctionParam(
-        bool isReference,
-        bool isMutable,
-        std::optional<std::string> lifetime
-    )
-        : isReference_(isReference),
-          isMutable_(isMutable),
-          lifetime_(std::move(lifetime)) {}
+    SelfFunctionParam(bool isReference, bool isMutable)
+        : isReference_(isReference), isMutable_(isMutable) {}
+
+    bool isReference() const { return isReference_; }
+    bool isMutable() const { return isMutable_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -250,9 +139,8 @@ private:
     std::unique_ptr<SelfFunctionParam> selfParam_;   // nullptr 表示没有 self 参数
     std::vector<std::unique_ptr<FunctionParam>> parameters_;  // 可以为空，表示没有普通参数
     std::unique_ptr<TypeRef> returnType_;  // nullptr 表示没有写 -> 类型
-    std::unique_ptr<WhereClause> whereClause_;  // nullptr 表示没有 where 子句。
     std::unique_ptr<BlockExpr> body_;
-    std::unique_ptr<GenericParams> genericParams_;
+    bool hasGenericParameters_;  // main 禁止声明泛型形参；无需保留生命周期名称和约束。
 public:
     FunctionItem(
         std::string name,
@@ -260,9 +148,15 @@ public:
         std::vector<std::unique_ptr<FunctionParam>> parameters,
         std::unique_ptr<TypeRef> returnType,
         std::unique_ptr<BlockExpr> body,
-        std::unique_ptr<WhereClause> whereClause = nullptr,
-        std::unique_ptr<GenericParams> genericParams = nullptr
-    ): name_(std::move(name)), selfParam_(std::move(selfParam)), parameters_(std::move(parameters)), returnType_(std::move(returnType)), whereClause_(std::move(whereClause)), body_(std::move(body)), genericParams_(std::move(genericParams)) {}
+        bool hasGenericParameters = false
+    ): name_(std::move(name)), selfParam_(std::move(selfParam)), parameters_(std::move(parameters)), returnType_(std::move(returnType)), body_(std::move(body)), hasGenericParameters_(hasGenericParameters) {}
+
+    const std::string &name() const { return name_; }
+    const SelfFunctionParam *selfParam() const { return selfParam_.get(); }
+    const auto &parameters() const { return parameters_; }
+    const TypeRef *returnType() const { return returnType_.get(); }
+    const BlockExpr &body() const { return *body_; }
+    bool hasGenericParameters() const { return hasGenericParameters_; }
 
     void dump(std::ostream &out, int indent) const override;
 };
@@ -277,6 +171,10 @@ public:
     ConstItem(std::string name, std::unique_ptr<TypeRef> type, ExprPtr value)
         : name_(std::move(name)), type_(std::move(type)), value_(std::move(value)) {}
 
+    const std::string &name() const { return name_; }
+    const TypeRef &type() const { return *type_; }
+    const Expr &value() const { return *value_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -288,6 +186,9 @@ class StructField final : public ASTNode {
 public:
     StructField(std::string name, std::unique_ptr<TypeRef> type)
         : name_(std::move(name)), type_(std::move(type)) {}
+
+    const std::string &name() const { return name_; }
+    const TypeRef &type() const { return *type_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -302,6 +203,8 @@ public:
     explicit DeriveAttribute(std::vector<std::string> names)
         : names_(std::move(names)) {}
 
+    const auto &names() const { return names_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -309,17 +212,16 @@ public:
 class StructItem final : public Item {
     std::string name_;
     std::vector<std::unique_ptr<StructField>> fields_;
-    std::unique_ptr<WhereClause> whereClause_;
     std::vector<std::unique_ptr<OuterAttribute>> attributes_;
-    std::unique_ptr<GenericParams> genericParams_;
 
 public:
     StructItem(std::string name, std::vector<std::unique_ptr<StructField>> fields,
-               std::unique_ptr<WhereClause> whereClause = nullptr,
-               std::vector<std::unique_ptr<OuterAttribute>> attributes = {},
-               std::unique_ptr<GenericParams> genericParams = nullptr)
-        : name_(std::move(name)), fields_(std::move(fields)), whereClause_(std::move(whereClause)),
-          attributes_(std::move(attributes)), genericParams_(std::move(genericParams)) {}
+               std::vector<std::unique_ptr<OuterAttribute>> attributes = {})
+        : name_(std::move(name)), fields_(std::move(fields)), attributes_(std::move(attributes)) {}
+
+    const std::string &name() const { return name_; }
+    const auto &fields() const { return fields_; }
+    const auto &attributes() const { return attributes_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -328,15 +230,13 @@ public:
 class ImplItem final : public Item {
     std::unique_ptr<TypeRef> type_;
     std::vector<ItemPtr> items_;
-    std::unique_ptr<WhereClause> whereClause_;
-    std::unique_ptr<GenericParams> genericParams_;
 
 public:
-    ImplItem(std::unique_ptr<TypeRef> type, std::vector<ItemPtr> items,
-             std::unique_ptr<WhereClause> whereClause,
-             std::unique_ptr<GenericParams> genericParams)
-        : type_(std::move(type)), items_(std::move(items)), whereClause_(std::move(whereClause)),
-          genericParams_(std::move(genericParams)) {}
+    ImplItem(std::unique_ptr<TypeRef> type, std::vector<ItemPtr> items)
+        : type_(std::move(type)), items_(std::move(items)) {}
+
+    const TypeRef &type() const { return *type_; }
+    const auto &items() const { return items_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -354,14 +254,25 @@ public:
         : name_(std::move(name)), isMutable_(isMutable), initializer_(std::move(initializer)),
           type_(std::move(type)) {}
 
+    const std::string &name() const { return name_; }
+    bool isMutable() const { return isMutable_; }
+    const Expr &initializer() const { return *initializer_; }
+    const TypeRef *type() const { return type_.get(); }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
 class ExprStmt final : public Stmt {
     ExprPtr expression_;
+    bool hasSemicolon_;  // 非末尾的带块语句省略分号时，需要检查结果为 () 或 never。
 
 public:
-    explicit ExprStmt(ExprPtr expression): expression_(std::move(expression)){};
+    explicit ExprStmt(ExprPtr expression, bool hasSemicolon = true)
+        : expression_(std::move(expression)), hasSemicolon_(hasSemicolon) {}
+
+    bool hasSemicolon() const { return hasSemicolon_; }
+
+    const Expr &expression() const { return *expression_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -378,6 +289,8 @@ class IntegerLiteralExpr final : public Expr{
 public:
     IntegerLiteralExpr(std::string text):text_(std::move(text)){};
 
+    const std::string &text() const { return text_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -386,6 +299,8 @@ class BooleanLiteralExpr final : public Expr{
 
 public:
     BooleanLiteralExpr(bool flag): flag_(flag){};
+
+    bool value() const { return flag_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -400,6 +315,10 @@ private:
 public:
     BinaryExpr(std::string op, ExprPtr left, ExprPtr right): op_(std::move(op)), left_(std::move(left)), right_(std::move(right)) {}
 
+    const std::string &op() const { return op_; }
+    const Expr &left() const { return *left_; }
+    const Expr &right() const { return *right_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -409,6 +328,9 @@ class UnaryExpr final : public Expr{
 
 public:
     UnaryExpr(std::string op, ExprPtr operand): op_(std::move(op)), operand_(std::move(operand)){};
+
+    const std::string &op() const { return op_; }
+    const Expr &operand() const { return *operand_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -421,34 +343,15 @@ public:
     CastExpr(ExprPtr value, std::unique_ptr<TypeRef> type)
         : value_(std::move(value)), type_(std::move(type)) {}
 
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-class GenericArgument : public ASTNode {}; //泛型参数的公共基类
-
-class TypeGenericArgument final : public GenericArgument { //持有现有的 `TypeRef`，复用数组、引用等类型构建逻辑
-    std::unique_ptr<TypeRef> type_;
-
-public:
-    explicit TypeGenericArgument(std::unique_ptr<TypeRef> type)
-        : type_(std::move(type)) {}
+    const Expr &value() const { return *value_; }
+    const TypeRef &type() const { return *type_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
-class LifetimeGenericArgument final : public GenericArgument {
-    std::string lifetime_;
+using GenericArgs = std::vector<std::unique_ptr<TypeRef>>;
 
-public:
-    explicit LifetimeGenericArgument(std::string lifetime)
-        : lifetime_(std::move(lifetime)) {}
-
-    void dump(std::ostream &out, int indent = 0) const override;
-};
-
-using GenericArgs = std::vector<std::unique_ptr<GenericArgument>>;
-
-// eg.Container::<'a, i32>::new::<u32>()
+// eg.Container::<i32>::new::<u32>()
 class PathSegment final : public ASTNode { //每个路径段保存自己的名称和泛型参数，防止 `Container` 和 `new` 的参数混在一起。
     std::string name_;
     // nullopt 表示省略参数；空列表表示显式写了 ::<>。
@@ -462,6 +365,20 @@ public:
     const std::string &name() const { return name_; }
     bool hasGenericArgs() const { return genericArgs_.has_value(); }
 
+    const auto &genericArgs() const { return genericArgs_; }
+
+    void dump(std::ostream &out, int indent = 0) const override;
+};
+
+// 类型路径复用路径段；嵌套引用、数组和容器实参均保存为 TypeRef。
+class TypePathRef final : public TypeRef {
+    std::vector<std::unique_ptr<PathSegment>> segments_;
+
+public:
+    explicit TypePathRef(std::vector<std::unique_ptr<PathSegment>> segments)
+        : segments_(std::move(segments)) {}
+
+    const auto &segments() const { return segments_; }
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -471,6 +388,8 @@ class PathExpr final : public Expr{
 public:
     explicit PathExpr(std::vector<std::unique_ptr<PathSegment>> segments)
         : segments_(std::move(segments)) {}
+
+    const auto &segments() const { return segments_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -482,6 +401,9 @@ class StructExprField final : public ASTNode {
 public:
     StructExprField(std::string name, ExprPtr value)
         : name_(std::move(name)), value_(std::move(value)) {}
+
+    const std::string &name() const { return name_; }
+    const Expr &value() const { return *value_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -495,6 +417,9 @@ public:
     StructExpr(std::unique_ptr<PathExpr> path, std::vector<std::unique_ptr<StructExprField>> fields)
         : path_(std::move(path)), fields_(std::move(fields)) {}
 
+    const PathExpr &path() const { return *path_; }
+    const auto &fields() const { return fields_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -504,6 +429,9 @@ class FieldExpr final : public Expr {
 
 public:
     FieldExpr(ExprPtr base, std::string field): base_(std::move(base)), field_(std::move(field)) {}
+
+    const Expr &base() const { return *base_; }
+    const std::string &field() const { return field_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -517,6 +445,10 @@ public:
     MethodCallExpr(ExprPtr receiver, std::unique_ptr<PathSegment> method, std::vector<ExprPtr> arguments)
         : receiver_(std::move(receiver)), method_(std::move(method)), arguments_(std::move(arguments)) {}
 
+    const Expr &receiver() const { return *receiver_; }
+    const PathSegment &method() const { return *method_; }
+    const auto &arguments() const { return arguments_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -527,6 +459,9 @@ private:
 
 public:
     AssignExpr(ExprPtr target, ExprPtr value): target_(std::move(target)), value_(std::move(value)) {}
+
+    const Expr &target() const { return *target_; }
+    const Expr &value() const { return *value_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -541,6 +476,10 @@ public:
     CompoundAssignExpr(std::string op, ExprPtr target, ExprPtr value)
         : op_(std::move(op)), target_(std::move(target)), value_(std::move(value)) {}
 
+    const std::string &op() const { return op_; }
+    const Expr &target() const { return *target_; }
+    const Expr &value() const { return *value_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -552,6 +491,10 @@ private:
 
 public:
     IfExpr(ExprPtr condition, std::unique_ptr<BlockExpr> thenBranch, ExprPtr elseBranch): condition_(std::move(condition)), thenBranch_(std::move(thenBranch)), elseBranch_(std::move(elseBranch)) {}
+
+    const Expr &condition() const { return *condition_; }
+    const BlockExpr &thenBranch() const { return *thenBranch_; }
+    const Expr *elseBranch() const { return elseBranch_.get(); }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -565,6 +508,9 @@ public:
     CallExpr(ExprPtr callee, std::vector<ExprPtr> arguments)
         : callee_(std::move(callee)), arguments_(std::move(arguments)) {}
 
+    const Expr &callee() const { return *callee_; }
+    const auto &arguments() const { return arguments_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -573,6 +519,8 @@ private:
     ExprPtr value_;   //nullptr : return;
 public:
     explicit ReturnExpr(ExprPtr value): value_(std::move(value)){};
+
+    const Expr *value() const { return value_.get(); }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -584,6 +532,8 @@ private:
     ExprPtr value_;   // nullptr 表示 break;，否则持有 break 后面的值。
 public:
     explicit BreakExpr(ExprPtr value): value_(std::move(value)){};
+
+    const Expr *value() const { return value_.get(); }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -600,6 +550,8 @@ private:
 public:
     explicit LoopExpr(std::unique_ptr<BlockExpr> block): block_(std::move(block)){};
 
+    const BlockExpr &body() const { return *block_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -610,6 +562,9 @@ private:
     std::unique_ptr<BlockExpr> block_;
 public:
     WhileExpr(ExprPtr condition, std::unique_ptr<BlockExpr> block): condition_(std::move(condition)), block_(std::move(block)){};
+
+    const Expr &condition() const { return *condition_; }
+    const BlockExpr &body() const { return *block_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };
@@ -622,6 +577,8 @@ private:
 public:
     ArrayExpr(std::vector<ExprPtr> elements) : elements_(std::move(elements)){};
 
+    const auto &elements() const { return elements_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -632,6 +589,9 @@ private:
 public:
     ArrayRepeatExpr(ExprPtr value, ExprPtr count) : value_(std::move(value)), count_(std::move(count)){};
 
+    const Expr &value() const { return *value_; }
+    const Expr &count() const { return *count_; }
+
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
@@ -641,6 +601,9 @@ private:
     ExprPtr index_;
 public:
     IndexExpr(ExprPtr base, ExprPtr index) : base_(std::move(base)), index_(std::move(index)){};
+
+    const Expr &base() const { return *base_; }
+    const Expr &index() const { return *index_; }
 
     void dump(std::ostream &out, int indent = 0) const override;
 };

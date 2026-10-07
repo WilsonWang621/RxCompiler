@@ -10,12 +10,6 @@ class ASTBuilder final : public ParserBaseVisitor{
     // 各 build 入口适配不同的 Context；优先级由语法决定，公共构建逻辑在 cpp 中复用。
     std::unique_ptr<ast::Item> buildItem(rx::Parser::ItemContext *ctx);
 
-    std::unique_ptr<ast::UseItem> buildUseItem(rx::Parser::UseDeclarationContext *ctx);
-
-    std::unique_ptr<ast::UseTree> buildUseTree(rx::Parser::UseTreeContext *ctx);
-
-    std::unique_ptr<ast::UsePath> buildUsePath(rx::Parser::UsePathContext *ctx);
-
     std::unique_ptr<ast::FunctionItem> buildFunction(rx::Parser::FunctionDefinitionContext *ctx);
 
     std::unique_ptr<ast::ConstItem> buildConstItem(rx::Parser::ConstantItemContext *ctx);
@@ -26,15 +20,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::ImplItem> buildInherentImpl(rx::Parser::InherentImplContext *ctx);
 
-    std::unique_ptr<ast::GenericParams> buildGenericParams(rx::Parser::GenericParamsContext *ctx);
-
-    std::unique_ptr<ast::LifetimeParam> buildLifetimeParam(rx::Parser::LifetimeParamContext *ctx);
-
     std::unique_ptr<ast::OuterAttribute> buildOuterAttribute(rx::Parser::OuterAttributeContext *ctx);
-
-    std::unique_ptr<ast::WhereClause> buildWhereClause(rx::Parser::WhereClauseContext *ctx);
-
-    std::unique_ptr<ast::WherePredicate> buildWherePredicate(rx::Parser::WhereClauseItemContext *ctx);
 
     std::unique_ptr<ast::BlockExpr> buildBlock(rx::Parser::BlockExpressionContext *ctx);
 
@@ -88,8 +74,12 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::PathSegment> buildPathSegment(rx::Parser::PathExprSegmentContext *ctx);
 
-    // 类型与生命周期参数按源码顺序保存，挂在各自的路径段上。
-    ast::GenericArgs buildGenericArgs(rx::Parser::GenericArgsContext *ctx);
+    // 仅保留具体类型实参；只有生命周期实参的列表按省略处理。
+    std::optional<ast::GenericArgs> buildGenericArgs(rx::Parser::GenericArgsContext *ctx);
+
+    std::unique_ptr<ast::PathSegment> buildTypePathSegment(rx::Parser::TypePathSegmentContext *ctx);
+
+    std::unique_ptr<ast::TypePathRef> buildTypePath(rx::Parser::TypePathContext *ctx);
 
     ast::ExprPtr buildStatementExpression(rx::Parser::StatementExpressionContext *ctx);
 
@@ -276,8 +266,6 @@ class ASTBuilder final : public ParserBaseVisitor{
     std::unique_ptr<ast::ArrayTypeRef> buildArrayType(rx::Parser::ArrayTypeContext *ctx);
 
     std::unique_ptr<ast::SelfFunctionParam> buildSelfParam(rx::Parser::SelfParamContext *ctx);
-    //普通参数
-    std::unique_ptr<ast::FunctionParam> buildFunctionParam(rx::Parser::FunctionParamContext *ctx);
 public:
     std::unique_ptr<ast::Crate> build(rx::Parser::CrateContext *ctx);
 };

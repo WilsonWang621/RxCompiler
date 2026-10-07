@@ -7,99 +7,8 @@ namespace{
         }
     }
 
-    void dumpLifetimeBounds(std::ostream &out, int indent, const std::vector<std::string> &bounds) {
-        printIndent(out, indent);
-        out << "Bounds:\n";
-        for (const auto &bound : bounds) {
-            printIndent(out, indent + 1);
-            out << "LifetimeBound: " << bound << '\n';
-        }
-    }
 }
 namespace rx::ast{
-    void UsePath::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "UsePath: " << (isAbsolute_ ? "absolute" : "relative") << '\n';
-        for (const auto &segment : segments_) {
-            printIndent(out, indent + 1);
-            out << "UsePathSegment: " << segment << '\n';
-        }
-    }
-
-    void NamedUseTree::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "NamedUseTree\n";
-        path_->dump(out, indent + 1);
-        if (alias_) {
-            printIndent(out, indent + 1);
-            out << "Alias: " << *alias_ << '\n';
-        }
-    }
-
-    void GlobUseTree::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "GlobUseTree\n";
-        if (path_ != nullptr) {
-            path_->dump(out, indent + 1);
-        }
-    }
-
-    void GroupUseTree::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "GroupUseTree\n";
-        if (path_ != nullptr) {
-            path_->dump(out, indent + 1);
-        }
-        for (const auto &tree : trees_) {
-            tree->dump(out, indent + 1);
-        }
-    }
-
-    void UseItem::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "UseItem\n";
-        tree_->dump(out, indent + 1);
-    }
-
-    void LifetimeParam::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "LifetimeParam: " << lifetime_ << '\n';
-        if (bounds_) {
-            dumpLifetimeBounds(out, indent + 1, *bounds_);
-        }
-    }
-
-    void GenericParams::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "GenericParams\n";
-        for (const auto &lifetime : lifetimes_) {
-            lifetime->dump(out, indent + 1);
-        }
-    }
-
-    void LifetimeWherePredicate::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "LifetimeWherePredicate: " << lifetime_ << '\n';
-        dumpLifetimeBounds(out, indent + 1, bounds_);
-    }
-
-    void TypeWherePredicate::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "TypeWherePredicate\n";
-        printIndent(out, indent + 1);
-        out << "Type:\n";
-        type_->dump(out, indent + 2);
-        dumpLifetimeBounds(out, indent + 1, bounds_);
-    }
-
-    void WhereClause::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "WhereClause\n";
-        for (const auto &predicate : predicates_) {
-            predicate->dump(out, indent + 1);
-        }
-    }
-
     void EmptyStmt::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
         out << "EmptyStmt\n";
@@ -120,9 +29,6 @@ namespace rx::ast{
         printIndent(out, indent);
         out << "Function: " << name_ << '\n';
 
-        if (genericParams_ != nullptr) {
-            genericParams_->dump(out, indent + 1);
-        }
 
         if (selfParam_ != nullptr) {
             selfParam_->dump(out, indent + 1);
@@ -136,9 +42,6 @@ namespace rx::ast{
             printIndent(out, indent + 1);
             out << "ReturnType\n";
             returnType_->dump(out, indent + 2);
-        }
-        if (whereClause_ != nullptr) {
-            whereClause_->dump(out, indent + 1);
         }
         body_->dump(out, indent + 1);
     }
@@ -177,12 +80,6 @@ namespace rx::ast{
         for (const auto &attribute : attributes_) {
             attribute->dump(out, indent + 1);
         }
-        if (genericParams_ != nullptr) {
-            genericParams_->dump(out, indent + 1);
-        }
-        if (whereClause_ != nullptr) {
-            whereClause_->dump(out, indent + 1);
-        }
         for (const auto &field : fields_) {
             field->dump(out, indent + 1);
         }
@@ -191,15 +88,9 @@ namespace rx::ast{
     void ImplItem::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
         out << "ImplItem\n";
-        if (genericParams_ != nullptr) {
-            genericParams_->dump(out, indent + 1);
-        }
         printIndent(out, indent + 1);
         out << "Type:\n";
         type_->dump(out, indent + 2);
-        if (whereClause_ != nullptr) {
-            whereClause_->dump(out, indent + 1);
-        }
         printIndent(out, indent + 1);
         out << "Items:\n";
         for (const auto &item : items_) {
@@ -210,7 +101,7 @@ namespace rx::ast{
     void Crate::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
         out << "Crate\n";
-        for(const auto &item : items){
+        for(const auto &item : items_){
             item->dump(out, indent + 1);
         }
     }
@@ -276,17 +167,6 @@ namespace rx::ast{
         type_->dump(out, indent + 2);
     }
 
-    void TypeGenericArgument::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "TypeArgument\n";
-        type_->dump(out, indent + 1);
-    }
-
-    void LifetimeGenericArgument::dump(std::ostream &out, int indent) const {
-        printIndent(out, indent);
-        out << "LifetimeArgument: " << lifetime_ << '\n';
-    }
-
     void PathSegment::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
         out << "PathSegment: " << name_ << '\n';
@@ -294,9 +174,33 @@ namespace rx::ast{
             printIndent(out, indent + 1);
             out << "GenericArgs\n";
             for (const auto &argument : *genericArgs_) {
-                argument->dump(out, indent + 2);
+                printIndent(out, indent + 2);
+                out << "TypeArgument\n";
+                argument->dump(out, indent + 3);
             }
         }
+    }
+
+    void TypePathRef::dump(std::ostream &out, int indent) const {
+        for (const auto &segment : segments_) {
+            if (segment->hasGenericArgs()) {
+                printIndent(out, indent);
+                out << "TypePathRef\n";
+                for (const auto &pathSegment : segments_) {
+                    pathSegment->dump(out, indent + 1);
+                }
+                return;
+            }
+        }
+        printIndent(out, indent);
+        out << "TypeRef: ";
+        for (std::size_t i = 0; i < segments_.size(); ++i) {
+            if (i != 0) {
+                out << "::";
+            }
+            out << segments_[i]->name();
+        }
+        out << '\n';
     }
 
     void PathExpr::dump(std::ostream &out, int indent) const{
@@ -370,7 +274,7 @@ namespace rx::ast{
 
     void ExprStmt::dump(std::ostream &out, int indent) const{
         printIndent(out, indent);
-        out << "ExprStmt:\n";
+        out << (hasSemicolon_ ? "ExprStmt:\n" : "ExprStmt (no semicolon):\n");
         expression_->dump(out, indent + 1);
     }
 
@@ -434,21 +338,14 @@ namespace rx::ast{
         block_->dump(out, indent + 2);
     }
 
-    void SimpleTypeRef::dump(std::ostream &out, int indent) const{
+    void UnitTypeRef::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
-        out << "TypeRef: " << type_ << '\n';
+        out << "TypeRef: ()\n";
     }
 
     void ReferenceTypeRef::dump(std::ostream &out, int indent) const {
         printIndent(out, indent);
-        out << "ReferenceTypeRef: &";
-        if (lifetime_) {
-            out << *lifetime_;
-        }
-        if (isMutable_) {
-            out << (lifetime_ ? " mut" : "mut");
-        }
-        out << '\n';
+        out << "ReferenceTypeRef: " << (isMutable_ ? "&mut" : "&") << '\n';
         referent_->dump(out, indent + 1);
     }
 
@@ -480,9 +377,6 @@ namespace rx::ast{
         out << "Parameter: ";
         if (isReference_) {
             out << '&';
-            if (lifetime_) {
-                out << *lifetime_ << ' ';
-            }
         }
         if (isMutable_) {
             out << "mut ";
