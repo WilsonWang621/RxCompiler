@@ -5,11 +5,14 @@
 
 namespace rx::frontend{
 
+// 将通过语法检查的 ANTLR Context 转为 AST；本阶段保留结构，不做名称解析或类型检查。
+// Context 指针只借用；build 返回的 unique_ptr 独占新节点，不依赖解析树的生命周期。
 class ASTBuilder final : public ParserBaseVisitor{
 
     // 各 build 入口适配不同的 Context；优先级由语法决定，公共构建逻辑在 cpp 中复用。
     std::unique_ptr<ast::Item> buildItem(rx::Parser::ItemContext *ctx);
 
+    // 声明入口：函数、常量、结构体和 impl 最终通过 Item 基类统一持有。
     std::unique_ptr<ast::FunctionItem> buildFunction(rx::Parser::FunctionDefinitionContext *ctx);
 
     std::unique_ptr<ast::ConstItem> buildConstItem(rx::Parser::ConstantItemContext *ctx);
@@ -22,6 +25,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::OuterAttribute> buildOuterAttribute(rx::Parser::OuterAttributeContext *ctx);
 
+    // 块中的语句和产生结果的尾表达式分开保存，分号决定两者的归属。
     std::unique_ptr<ast::BlockExpr> buildBlock(rx::Parser::BlockExpressionContext *ctx);
 
     //1.1
@@ -43,6 +47,7 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildMagnitude(rx::Parser::MagnitudeContext *ctx);
 
     //1.2
+    // 运算层逐级构建更高优先级的操作数，同层二元链通过公共辅助函数左折叠。
     ast::ExprPtr buildAdditive(rx::Parser::AdditiveExpressionContext *ctx);
 
     ast::ExprPtr buildMultiplicative(rx::Parser::MultiplicativeExpressionContext *ctx);
@@ -59,12 +64,14 @@ class ASTBuilder final : public ParserBaseVisitor{
     // 各表达式入口共用后缀构建，按源码顺序包装已有的 base 节点。
     ast::ExprPtr buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx);
 
+    // 根据点后缀是否带调用括号，区分字段访问和方法调用。
     ast::ExprPtr buildDotSuffix(ast::ExprPtr base, rx::Parser::DotSuffixContext *ctx);
 
     std::vector<ast::ExprPtr> buildCallArguments(rx::Parser::CallArgumentsContext *ctx);
 
     ast::ExprPtr buildPrimary(rx::Parser::PrimaryExpressionContext *ctx);
 
+    // 路径按段保存名称和实参；此处不查找其对应的变量、函数或类型。
     std::unique_ptr<ast::PathExpr> buildPath(rx::Parser::PathInExpressionContext *ctx);
 
     std::unique_ptr<ast::StructExpr> buildStructExpr(rx::Parser::PathInExpressionContext *pathCtx,
@@ -113,6 +120,7 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildShiftOperand(antlr4::tree::ParseTree *ctx);
 
     //The "closed" prefix: handles ambiguity between < and generic parameters
+    // closed 限制沿表达式末项传播，用于约束比较或移位前最后一次 as 的目标类型。
     ast::ExprPtr buildClosedBitOr(rx::Parser::ClosedBitOrExpressionContext *ctx);
 
     ast::ExprPtr buildClosedBitXor(rx::Parser::ClosedBitXorExpressionContext *ctx);
@@ -134,6 +142,7 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildClosedCast(rx::Parser::ClosedCastExpressionContext *ctx);
 
     //statement prefix: The expression that enters from the beginning of the statement.
+    // statement 限制沿首项传播，处理带块表达式在语句起始位置的文法差异。
     ast::ExprPtr buildStatementBitOr(rx::Parser::StatementBitOrExpressionContext *ctx);
 
     ast::ExprPtr buildStatementBitXor(rx::Parser::StatementBitXorExpressionContext *ctx);
@@ -163,6 +172,7 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildStatementClosedCast(rx::Parser::StatementClosedCastExpressionContext *ctx);
 
     //condition prefix: The expression in the condition position
+    // condition 不允许无定界结构体构造；括号、参数列表及下标内部恢复普通表达式。
     ast::ExprPtr buildConditionBitOr(rx::Parser::ConditionBitOrExpressionContext *ctx);
 
     ast::ExprPtr buildConditionBitXor(rx::Parser::ConditionBitXorExpressionContext *ctx);
@@ -246,6 +256,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     ast::ExprPtr buildConditionBreakPostfix(rx::Parser::ConditionBreakPostfixExpressionContext *ctx);
 
+    // else 分支可缺省、为块或为递归的 else if，统一存为可选 ExprPtr。
     ast::ExprPtr buildIf(rx::Parser::IfExpressionContext *ctx);
 
     // loop 在两条语法规则中出现，共用循环体的构建逻辑。
@@ -258,6 +269,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::FunctionParam> buildNamedParam(rx::Parser::FunctionParamContext *ctx);
 
+    // 类型按路径、引用、数组和括号分组递归构建；(T) 不额外创建节点。
     std::unique_ptr<ast::TypeRef> buildTypeRef(rx::Parser::TypeRefContext *ctx);
 
     std::unique_ptr<ast::TypeRef> buildClosedCastType(rx::Parser::ClosedCastTypeContext *ctx);
@@ -267,6 +279,7 @@ class ASTBuilder final : public ParserBaseVisitor{
 
     std::unique_ptr<ast::SelfFunctionParam> buildSelfParam(rx::Parser::SelfParamContext *ctx);
 public:
+    // 对外唯一构建入口，返回包含全部保留声明的根节点。
     std::unique_ptr<ast::Crate> build(rx::Parser::CrateContext *ctx);
 };
 }

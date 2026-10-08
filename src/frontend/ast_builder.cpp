@@ -61,6 +61,7 @@ rx::ast::ExprPtr buildAssignment(rx::ast::ExprPtr left, rx::Parser::AssignmentOp
     );
 }
 
+// 将已构建的操作数包装为一元节点；&& 借用需要拆成两层 &。
 rx::ast::ExprPtr buildUnaryOperator(rx::Parser::UnaryOperatorContext *ctx, rx::ast::ExprPtr operand) {
     if (ctx->AMP() != nullptr || ctx->ANDAND() != nullptr) {
         operand = std::make_unique<rx::ast::UnaryExpr>(
@@ -92,6 +93,7 @@ std::unique_ptr<rx::ast::TypeRef> buildReferenceType(Context *ctx, std::unique_p
 
 namespace rx::frontend{
 
+// 从 crate 入口顺序构建声明；解析树只借用，返回的 AST 独立持有自己的节点。
 std::unique_ptr<ast::Crate> ASTBuilder::build(rx::Parser::CrateContext *ctx){
     auto result = std::make_unique<ast::Crate>();
     for(auto itemCtx : ctx->item()){
@@ -104,6 +106,7 @@ std::unique_ptr<ast::Crate> ASTBuilder::build(rx::Parser::CrateContext *ctx){
     return result;
 }
     
+// 根据 item 实际匹配的文法分支分派，use 已在顶层入口过滤。
 std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
     if (ctx->functionDefinition() != nullptr) {
         return buildFunction(ctx->functionDefinition());
@@ -126,6 +129,7 @@ std::unique_ptr<ast::Item> ASTBuilder::buildItem(rx::Parser::ItemContext *ctx){
     );
 }
 
+// 分别构建常量名称、声明类型和初始化表达式，不在此处计算常量值。
 std::unique_ptr<ast::ConstItem> ASTBuilder::buildConstItem(rx::Parser::ConstantItemContext *ctx) {
     std::string name = ctx->identifier()->getText();
     auto type = buildTypeRef(ctx->typeRef());
@@ -138,6 +142,7 @@ std::unique_ptr<ast::ConstItem> ASTBuilder::buildConstItem(rx::Parser::ConstantI
     );
 }
 
+// 保留结构体属性和字段；生命周期形参及 where 约束已通过语法检查，随后丢弃。
 std::unique_ptr<ast::StructItem> ASTBuilder::buildStructItem(rx::Parser::StructDefinitionContext *ctx) {
 
     std::vector<std::unique_ptr<ast::OuterAttribute>> attributes;
@@ -156,11 +161,13 @@ std::unique_ptr<ast::StructItem> ASTBuilder::buildStructItem(rx::Parser::StructD
     );
 }
 
+// 字段声明只保存名称及类型；重名和类型合法性由后续语义分析检查。
 std::unique_ptr<ast::StructField> ASTBuilder::buildStructField(rx::Parser::StructFieldContext *ctx) {
     auto type = buildTypeRef(ctx->typeRef());
     return std::make_unique<ast::StructField>(ctx->identifier()->getText(), std::move(type));
 }
 
+// 构建 impl 的目标类型和关联项，复用函数及常量入口，不在此处绑定到结构体。
 std::unique_ptr<ast::ImplItem> ASTBuilder::buildInherentImpl(rx::Parser::InherentImplContext *ctx) {
     auto type = buildTypeRef(ctx->typeRef());
     std::vector<ast::ItemPtr> items;
@@ -185,6 +192,7 @@ std::unique_ptr<ast::OuterAttribute> ASTBuilder::buildOuterAttribute(rx::Parser:
     return std::make_unique<ast::DeriveAttribute>(std::move(names));
 }
 
+// 将函数签名与函数体组合为声明节点，self 参数与普通参数分别保存。
 std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::FunctionDefinitionContext *ctx){
     std::string name = ctx->identifier()->getText();
 
@@ -203,6 +211,7 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
         }
     }
 
+    // 未写 -> 时保持 nullptr，保留“省略返回类型”和“显式写 ()”的区别。
     std::unique_ptr<ast::TypeRef> returnType;
 
     if (ctx->typeRef() != nullptr) {
@@ -211,6 +220,7 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
 
     auto body = buildBlock(ctx->blockExpression());
 
+    // 丢弃生命周期详情，只保留是否声明形参，供后续检查 main 入口签名。
     return std::make_unique<ast::FunctionItem>(
         std::move(name),
         std::move(selfParam),
@@ -221,6 +231,7 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
     );
 }
 
+// 按顺序构建语句，并将末尾无分号的结果表达式单独保存为 tail。
 std::unique_ptr<ast::BlockExpr> ASTBuilder::buildBlock(rx::Parser::BlockExpressionContext *ctx){
     auto block = std::make_unique<ast::BlockExpr>();
 
@@ -235,6 +246,7 @@ std::unique_ptr<ast::BlockExpr> ASTBuilder::buildBlock(rx::Parser::BlockExpressi
             block->addStatement(buildStatement(statementCtx));
         }
     }
+    // 文法直接识别出的普通尾表达式不包装成 ExprStmt。
     if( ctx->statementExpression() != nullptr){
         block->setTail(buildStatementExpression(ctx->statementExpression()));
     }
@@ -261,6 +273,7 @@ std::unique_ptr<ast::LetStmt> ASTBuilder::buildLet(rx::Parser::LetStatementConte
     );
 }
 
+// let 构建声明语句；值表达式包装为 ExprStmt；单独的分号构建 EmptyStmt。
 ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
     if(ctx->letStatement() != nullptr){
         return buildLet(ctx->letStatement());
@@ -285,6 +298,7 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
     throw std::runtime_error("this statement form is not supported yet");
 }
 
+// 普通表达式从最低优先级的赋值层进入；右侧递归 expression 保留右结合性。
 ast::ExprPtr ASTBuilder::buildExpression(rx::Parser::ExpressionContext *ctx){
     auto assignment = ctx->assignmentExpression();
     return buildAssignment(
@@ -296,6 +310,7 @@ ast::ExprPtr ASTBuilder::buildExpression(rx::Parser::ExpressionContext *ctx){
     );
 }
 
+// 布尔字面量直接保存值；整数字面量保留原文，供后续处理进制、后缀和范围。
 ast::ExprPtr ASTBuilder::buildLiteral(rx::Parser::LiteralExpressionContext *ctx){
     if(ctx->TRUE() != nullptr || ctx->FALSE() != nullptr){
         bool flag = ctx->TRUE() != nullptr;
@@ -379,6 +394,7 @@ ast::ExprPtr ASTBuilder::buildMagnitude(rx::Parser::MagnitudeContext *ctx){
     throw std::runtime_error{"this magnitude is not supported yet"};
 }
 
+// 先构建更高优先级的乘法操作数，再将 + / - 从左到右折叠。
 ast::ExprPtr ASTBuilder::buildAdditive(rx::Parser::AdditiveExpressionContext *ctx){
     auto operands = ctx->multiplicativeExpression();
     return buildBinaryChain(
@@ -390,6 +406,7 @@ ast::ExprPtr ASTBuilder::buildAdditive(rx::Parser::AdditiveExpressionContext *ct
     );
 }
 
+// 以 cast 子树为操作数，按左结合构建乘法、除法和取模运算链。
 ast::ExprPtr ASTBuilder::buildMultiplicative(rx::Parser::MultiplicativeExpressionContext *ctx) {
     auto operands = ctx->castExpression();
     return buildBinaryChain(
@@ -401,10 +418,12 @@ ast::ExprPtr ASTBuilder::buildMultiplicative(rx::Parser::MultiplicativeExpressio
     );
 }
 
+// 先处理一元表达式，再依次附加其后的 as 类型转换。
 ast::ExprPtr ASTBuilder::buildCast(rx::Parser::CastExpressionContext *ctx) {
     return buildCastChain(buildUnary(ctx->unaryExpression()), ctx->typeRef());
 }
 
+// x as A as B 构建为 Cast(Cast(x, A), B)，每次将旧结果交给新节点持有。
 ast::ExprPtr ASTBuilder::buildCastChain(ast::ExprPtr value, const std::vector<rx::Parser::TypeRefContext*> &types) {
     for (auto *type : types) {
         value = std::make_unique<ast::CastExpr>(std::move(value), buildTypeRef(type));
@@ -421,6 +440,7 @@ ast::ExprPtr ASTBuilder::buildUnary(rx::Parser::UnaryExpressionContext *ctx){
     return buildPostfix(ctx->postfixExpression());
 }
 
+// 从基础表达式出发依次附加后缀，例如 a[i].f(x) 先索引，再构建方法调用。
 ast::ExprPtr ASTBuilder::buildPostfix(rx::Parser::PostfixExpressionContext *ctx){
     auto result = buildPrimary(ctx->primaryExpression());
     for (auto *suffix : ctx->postfixSuffix()) {
@@ -475,6 +495,7 @@ std::vector<ast::ExprPtr> ASTBuilder::buildCallArguments(rx::Parser::CallArgumen
     return arguments;
 }
 
+// 基础表达式按是否携带块分派，最终统一返回 ExprPtr。
 ast::ExprPtr ASTBuilder::buildPrimary(rx::Parser::PrimaryExpressionContext *ctx) {
     auto nonBlock = ctx->nonBlockPrimary();
 
@@ -521,6 +542,7 @@ std::unique_ptr<ast::StructExpr> ASTBuilder::buildStructExpr(rx::Parser::PathInE
     return std::make_unique<ast::StructExpr>(std::move(path), std::move(fields));
 }
 
+// 构造字段保存 field: value 的值表达式，不在此处匹配字段声明或检查类型。
 std::unique_ptr<ast::StructExprField> ASTBuilder::buildStructExprField(rx::Parser::StructExprFieldContext *ctx) {
     auto value = buildExpression(ctx->expression());
     return std::make_unique<ast::StructExprField>(ctx->identifier()->getText(), std::move(value));
@@ -552,12 +574,14 @@ std::optional<ast::GenericArgs> ASTBuilder::buildGenericArgs(rx::Parser::Generic
     return arguments;
 }
 
+// 类型位置的路径段与值位置共用 AST 结构，仅解析树入口不同。
 std::unique_ptr<ast::PathSegment> ASTBuilder::buildTypePathSegment(rx::Parser::TypePathSegmentContext *ctx) {
     return std::make_unique<ast::PathSegment>(
         ctx->pathIdentSegment()->getText(), buildGenericArgs(ctx->genericArgs())
     );
 }
 
+// 按 :: 的顺序组合类型路径，各段的嵌套具体类型实参递归构建。
 std::unique_ptr<ast::TypePathRef> ASTBuilder::buildTypePath(rx::Parser::TypePathContext *ctx) {
     std::vector<std::unique_ptr<ast::PathSegment>> segments;
     for (auto *segmentCtx : ctx->typePathSegment()) {
@@ -566,6 +590,7 @@ std::unique_ptr<ast::TypePathRef> ASTBuilder::buildTypePath(rx::Parser::TypePath
     return std::make_unique<ast::TypePathRef>(std::move(segments));
 }
 
+// 语句起始位置的限制只沿左侧传播，赋值右侧重新进入普通 expression。
 ast::ExprPtr ASTBuilder::buildStatementExpression(rx::Parser::StatementExpressionContext *ctx){
     auto assignment = ctx->statementAssignmentExpression();
     return buildAssignment(
@@ -577,6 +602,7 @@ ast::ExprPtr ASTBuilder::buildStatementExpression(rx::Parser::StatementExpressio
     );
 }
 
+// 首项使用 statement 入口；operands 只含后续项，因此回调直接使用下标 i。
 ast::ExprPtr ASTBuilder::buildStatementAdditive(rx::Parser::StatementAdditiveExpressionContext *ctx) {
     auto operands = ctx->multiplicativeExpression();
     return buildBinaryChain(
@@ -588,6 +614,7 @@ ast::ExprPtr ASTBuilder::buildStatementAdditive(rx::Parser::StatementAdditiveExp
     );
 }
 
+// 首个 cast 保留语句起始限制，其后的乘除取模操作数使用普通入口。
 ast::ExprPtr ASTBuilder::buildStatementMultiplicative(rx::Parser::StatementMultiplicativeExpressionContext *ctx) {
     auto operands = ctx->castExpression();
     return buildBinaryChain(
@@ -599,6 +626,7 @@ ast::ExprPtr ASTBuilder::buildStatementMultiplicative(rx::Parser::StatementMulti
     );
 }
 
+// 语句起始的一元表达式后仍可连续 as，转换链复用普通入口的构建方式。
 ast::ExprPtr ASTBuilder::buildStatementCast(rx::Parser::StatementCastExpressionContext *ctx) {
     return buildCastChain(buildStatementUnary(ctx->statementUnaryExpression()), ctx->typeRef());
 }
@@ -669,6 +697,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
     if(ctx->RETURN() != nullptr){
         ast::ExprPtr value;
 
+        // 无操作数时保持 nullptr；有操作数时保存完整子树，返回类型稍后检查。
         if (ctx->expression() != nullptr) {
             value = buildExpression(
                 ctx->expression()
@@ -683,6 +712,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
     if (ctx->LPAREN() != nullptr) {
         auto *inner = ctx->expression();
 
+        // () 是单元值，(expr) 只用于分组，优先级已由解析树体现。
         if (inner == nullptr) {
             return std::make_unique<ast::UnitExpr>();
         }
@@ -706,6 +736,7 @@ ast::ExprPtr ASTBuilder::buildConditionExpression(rx::Parser::ConditionExpressio
     );
 }
 
+// 按位或的操作数先构建为优先级更高的按位异或子树。
 ast::ExprPtr ASTBuilder::buildBitOr(rx::Parser::BitOrExpressionContext *ctx){
     auto operands = ctx->bitXorExpression();
     return buildBinaryChain(
@@ -717,6 +748,7 @@ ast::ExprPtr ASTBuilder::buildBitOr(rx::Parser::BitOrExpressionContext *ctx){
     );
 }
 
+// 按位异或以按位与子树为操作数，重复运算按左结合保存。
 ast::ExprPtr ASTBuilder::buildBitXor(rx::Parser::BitXorExpressionContext *ctx){
     auto operands = ctx->bitAndExpression();
     return buildBinaryChain(
@@ -728,6 +760,7 @@ ast::ExprPtr ASTBuilder::buildBitXor(rx::Parser::BitXorExpressionContext *ctx){
     );
 }
 
+// 此处 & 是二元按位与；一元借用由 buildUnaryOperator 处理。
 ast::ExprPtr ASTBuilder::buildBitAnd(rx::Parser::BitAndExpressionContext *ctx){
     auto operands = ctx->shiftExpression();
     return buildBinaryChain(
@@ -739,10 +772,12 @@ ast::ExprPtr ASTBuilder::buildBitAnd(rx::Parser::BitAndExpressionContext *ctx){
     );
 }
 
+// 移位混用普通及 closed 操作数，交给公共入口按解析树顺序折叠。
 ast::ExprPtr ASTBuilder::buildShift(rx::Parser::ShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// closed 限制沿最后一项传播；没有普通项时直接构建末项，不创建二元节点。
 ast::ExprPtr ASTBuilder::buildClosedBitOr(rx::Parser::ClosedBitOrExpressionContext *ctx){
     auto operands = ctx->bitXorExpression();
     if (operands.empty()) {
@@ -760,6 +795,7 @@ ast::ExprPtr ASTBuilder::buildClosedBitOr(rx::Parser::ClosedBitOrExpressionConte
     );
 }
 
+// 前面的异或操作数用普通入口，末项使用 closed 按位与入口。
 ast::ExprPtr ASTBuilder::buildClosedBitXor(rx::Parser::ClosedBitXorExpressionContext *ctx){
     auto operands = ctx->bitAndExpression();
     if (operands.empty()) {
@@ -777,6 +813,7 @@ ast::ExprPtr ASTBuilder::buildClosedBitXor(rx::Parser::ClosedBitXorExpressionCon
     );
 }
 
+// 按位与链仅对最后一个移位操作数施加 closed 限制。
 ast::ExprPtr ASTBuilder::buildClosedBitAnd(rx::Parser::ClosedBitAndExpressionContext *ctx){
     auto operands = ctx->shiftExpression();
     if (operands.empty()) {
@@ -794,6 +831,7 @@ ast::ExprPtr ASTBuilder::buildClosedBitAnd(rx::Parser::ClosedBitAndExpressionCon
     );
 }
 
+// closed 移位与普通移位共用遍历逻辑，具体操作数类型由解析树决定。
 ast::ExprPtr ASTBuilder::buildClosedShift(rx::Parser::ClosedShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
@@ -811,6 +849,7 @@ ast::ExprPtr ASTBuilder::buildShiftChain(antlr4::ParserRuleContext *ctx) {
     return result;
 }
 
+// 动态识别操作数的 Context，保持普通、语句、条件及条件 break 的入口限制。
 ast::ExprPtr ASTBuilder::buildShiftOperand(antlr4::tree::ParseTree *ctx) {
     if (auto *operand = dynamic_cast<rx::Parser::AdditiveExpressionContext*>(ctx)) {
         return buildAdditive(operand);
@@ -839,6 +878,7 @@ ast::ExprPtr ASTBuilder::buildShiftOperand(antlr4::tree::ParseTree *ctx) {
     throw std::logic_error{"unexpected operand in shift expression"};
 }
 
+// 构建 || 的左结合子树；这里只保留结构，运行时短路由后续代码生成实现。
 ast::ExprPtr ASTBuilder::buildLogicalOr(rx::Parser::LogicalOrExpressionContext *ctx){
     auto operands = ctx->logicalAndExpression();
     return buildBinaryChain(
@@ -850,6 +890,7 @@ ast::ExprPtr ASTBuilder::buildLogicalOr(rx::Parser::LogicalOrExpressionContext *
     );
 }
 
+// 构建 && 的左结合子树；此处为二元逻辑与，与一元的双层借用区分。
 ast::ExprPtr ASTBuilder::buildLogicalAnd(rx::Parser::LogicalAndExpressionContext *ctx){
     auto operands = ctx->comparisonExpression();
     return buildBinaryChain(
@@ -861,6 +902,7 @@ ast::ExprPtr ASTBuilder::buildLogicalAnd(rx::Parser::LogicalAndExpressionContext
     );
 }
 
+// < 的左侧使用 closed 入口，防止末尾 as 类型将 < 吞作泛型实参起点。
 ast::ExprPtr ASTBuilder::buildComparison(rx::Parser::ComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
         return buildOptionalBinary(
@@ -917,6 +959,7 @@ ast::ExprPtr ASTBuilder::buildClosedMultiplicative(rx::Parser::ClosedMultiplicat
     );
 }
 
+// 无 as 时直接返回一元子树；否则最后一次转换使用 closed 类型入口。
 ast::ExprPtr ASTBuilder::buildClosedCast(rx::Parser::ClosedCastExpressionContext *ctx){
     if (ctx->unaryExpression() != nullptr) {
         return buildUnary(ctx->unaryExpression());
@@ -928,6 +971,7 @@ ast::ExprPtr ASTBuilder::buildClosedCast(rx::Parser::ClosedCastExpressionContext
 }
 
 //statement prefix: The expression that enters from the beginning of the statement.
+// 按位或首项使用语句入口，后续异或操作数切回普通表达式入口。
 ast::ExprPtr ASTBuilder::buildStatementBitOr(rx::Parser::StatementBitOrExpressionContext *ctx){
     auto operands = ctx->bitXorExpression();
     return buildBinaryChain(
@@ -939,6 +983,7 @@ ast::ExprPtr ASTBuilder::buildStatementBitOr(rx::Parser::StatementBitOrExpressio
     );
 }
 
+// 按位异或首项保留语句起始限制，后续按位与子树按普通规则构建。
 ast::ExprPtr ASTBuilder::buildStatementBitXor(rx::Parser::StatementBitXorExpressionContext *ctx){
     auto operands = ctx->bitAndExpression();
     return buildBinaryChain(
@@ -950,6 +995,7 @@ ast::ExprPtr ASTBuilder::buildStatementBitXor(rx::Parser::StatementBitXorExpress
     );
 }
 
+// 语句入口限制仅用于首个移位子树，后续项按左结合追加。
 ast::ExprPtr ASTBuilder::buildStatementBitAnd(rx::Parser::StatementBitAndExpressionContext *ctx){
     auto operands = ctx->shiftExpression();
     return buildBinaryChain(
@@ -961,10 +1007,12 @@ ast::ExprPtr ASTBuilder::buildStatementBitAnd(rx::Parser::StatementBitAndExpress
     );
 }
 
+// 公共移位入口会按 Context 区分首项的 statement 规则和后续普通规则。
 ast::ExprPtr ASTBuilder::buildStatementShift(rx::Parser::StatementShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// 单项直接传递限制；多项链同时保留首项的 statement 和末项的 closed 限制。
 ast::ExprPtr ASTBuilder::buildStatementClosedBitOr(rx::Parser::StatementClosedBitOrExpressionContext *ctx){
     if (ctx->statementClosedBitXorExpression() != nullptr) {
         return buildStatementClosedBitXor(ctx->statementClosedBitXorExpression());
@@ -983,6 +1031,7 @@ ast::ExprPtr ASTBuilder::buildStatementClosedBitOr(rx::Parser::StatementClosedBi
     );
 }
 
+// 异或链中间项使用普通入口，首项和末项分别承担 statement、closed 限制。
 ast::ExprPtr ASTBuilder::buildStatementClosedBitXor(rx::Parser::StatementClosedBitXorExpressionContext *ctx){
     if (ctx->statementClosedBitAndExpression() != nullptr) {
         return buildStatementClosedBitAnd(ctx->statementClosedBitAndExpression());
@@ -1001,6 +1050,7 @@ ast::ExprPtr ASTBuilder::buildStatementClosedBitXor(rx::Parser::StatementClosedB
     );
 }
 
+// 按位与的首项按语句规则构建，最后一个移位子树按 closed 规则构建。
 ast::ExprPtr ASTBuilder::buildStatementClosedBitAnd(rx::Parser::StatementClosedBitAndExpressionContext *ctx){
     if (ctx->statementClosedShiftExpression() != nullptr) {
         return buildStatementClosedShift(ctx->statementClosedShiftExpression());
@@ -1019,10 +1069,12 @@ ast::ExprPtr ASTBuilder::buildStatementClosedBitAnd(rx::Parser::StatementClosedB
     );
 }
 
+// 移位链保留首项的语句限制及末项的 closed 限制，遍历方式与普通移位一致。
 ast::ExprPtr ASTBuilder::buildStatementClosedShift(rx::Parser::StatementClosedShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// 首项从语句逻辑与入口进入，后续 || 操作数使用普通逻辑与入口。
 ast::ExprPtr ASTBuilder::buildStatementLogicalOr(rx::Parser::StatementLogicalOrExpressionContext *ctx){
     auto operands = ctx->logicalAndExpression();
     return buildBinaryChain(
@@ -1034,6 +1086,7 @@ ast::ExprPtr ASTBuilder::buildStatementLogicalOr(rx::Parser::StatementLogicalOrE
     );
 }
 
+// 首个比较保留语句限制，后续 && 操作数使用普通比较入口。
 ast::ExprPtr ASTBuilder::buildStatementLogicalAnd(rx::Parser::StatementLogicalAndExpressionContext *ctx){
     auto operands = ctx->comparisonExpression();
     return buildBinaryChain(
@@ -1045,6 +1098,7 @@ ast::ExprPtr ASTBuilder::buildStatementLogicalAnd(rx::Parser::StatementLogicalAn
     );
 }
 
+// 比较左侧保留 statement 限制，遇到 < 再叠加 closed 限制；右侧用普通入口。
 ast::ExprPtr ASTBuilder::buildStatementComparison(rx::Parser::StatementComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
         return buildOptionalBinary(
@@ -1103,6 +1157,7 @@ ast::ExprPtr ASTBuilder::buildStatementClosedMultiplicative(rx::Parser::Statemen
     );
 }
 
+// 没有转换时保留语句一元入口，否则给已有 cast 链附加最终的 closed 类型。
 ast::ExprPtr ASTBuilder::buildStatementClosedCast(rx::Parser::StatementClosedCastExpressionContext *ctx){
     if (ctx->statementUnaryExpression() != nullptr) {
         return buildStatementUnary(ctx->statementUnaryExpression());
@@ -1113,6 +1168,7 @@ ast::ExprPtr ASTBuilder::buildStatementClosedCast(rx::Parser::StatementClosedCas
     );
 }
 
+// 条件中的按位或全部使用条件操作数，保持不允许无定界结构体构造的限制。
 ast::ExprPtr ASTBuilder::buildConditionBitOr(rx::Parser::ConditionBitOrExpressionContext *ctx){
     auto operands = ctx->conditionBitXorExpression();
     return buildBinaryChain(
@@ -1124,6 +1180,7 @@ ast::ExprPtr ASTBuilder::buildConditionBitOr(rx::Parser::ConditionBitOrExpressio
     );
 }
 
+// 以条件按位与子树为操作数，从左到右构建异或链。
 ast::ExprPtr ASTBuilder::buildConditionBitXor(rx::Parser::ConditionBitXorExpressionContext *ctx){
     auto operands = ctx->conditionBitAndExpression();
     return buildBinaryChain(
@@ -1135,6 +1192,7 @@ ast::ExprPtr ASTBuilder::buildConditionBitXor(rx::Parser::ConditionBitXorExpress
     );
 }
 
+// 条件按位与使用条件移位入口，避免退回允许裸结构体构造的普通规则。
 ast::ExprPtr ASTBuilder::buildConditionBitAnd(rx::Parser::ConditionBitAndExpressionContext *ctx){
     auto operands = ctx->conditionShiftExpression();
     return buildBinaryChain(
@@ -1146,10 +1204,12 @@ ast::ExprPtr ASTBuilder::buildConditionBitAnd(rx::Parser::ConditionBitAndExpress
     );
 }
 
+// 按解析树顺序构建条件中的移位链，并保持各项的 condition 限制。
 ast::ExprPtr ASTBuilder::buildConditionShift(rx::Parser::ConditionShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// 条件的加减链与普通链结合方式相同，但每项都从条件乘法入口构建。
 ast::ExprPtr ASTBuilder::buildConditionAdditive(rx::Parser::ConditionAdditiveExpressionContext *ctx){
     auto operands = ctx->conditionMultiplicativeExpression();
     return buildBinaryChain(
@@ -1161,6 +1221,7 @@ ast::ExprPtr ASTBuilder::buildConditionAdditive(rx::Parser::ConditionAdditiveExp
     );
 }
 
+// 按左结合组织条件中的乘除取模，操作数由条件 cast 入口提供。
 ast::ExprPtr ASTBuilder::buildConditionMultiplicative(rx::Parser::ConditionMultiplicativeExpressionContext *ctx){
     auto operands = ctx->conditionCastExpression();
     return buildBinaryChain(
@@ -1172,10 +1233,12 @@ ast::ExprPtr ASTBuilder::buildConditionMultiplicative(rx::Parser::ConditionMulti
     );
 }
 
+// 条件入口限制值表达式的起点，as 的目标仍使用通用类型构建入口。
 ast::ExprPtr ASTBuilder::buildConditionCast(rx::Parser::ConditionCastExpressionContext *ctx){
     return buildCastChain(buildConditionUnary(ctx->conditionUnaryExpression()), ctx->typeRef());
 }
 
+// 每项保留条件限制，只有最后一个异或子树继续传递 closed 限制。
 ast::ExprPtr ASTBuilder::buildConditionClosedBitOr(rx::Parser::ConditionClosedBitOrExpressionContext *ctx){
     auto operands = ctx->conditionBitXorExpression();
     if (operands.empty()) {
@@ -1193,6 +1256,7 @@ ast::ExprPtr ASTBuilder::buildConditionClosedBitOr(rx::Parser::ConditionClosedBi
     );
 }
 
+// 条件异或链将 closed 限制传给末项；无前置项时直接返回该子树。
 ast::ExprPtr ASTBuilder::buildConditionClosedBitXor(rx::Parser::ConditionClosedBitXorExpressionContext *ctx){
     auto operands = ctx->conditionBitAndExpression();
     if (operands.empty()) {
@@ -1210,6 +1274,7 @@ ast::ExprPtr ASTBuilder::buildConditionClosedBitXor(rx::Parser::ConditionClosedB
     );
 }
 
+// 条件按位与的末项使用 closed 移位入口，其余项使用普通条件移位入口。
 ast::ExprPtr ASTBuilder::buildConditionClosedBitAnd(rx::Parser::ConditionClosedBitAndExpressionContext *ctx){
     auto operands = ctx->conditionShiftExpression();
     if (operands.empty()) {
@@ -1227,10 +1292,12 @@ ast::ExprPtr ASTBuilder::buildConditionClosedBitAnd(rx::Parser::ConditionClosedB
     );
 }
 
+// 共用移位遍历，末项的 conditionClosed Context 会保留类型结尾限制。
 ast::ExprPtr ASTBuilder::buildConditionClosedShift(rx::Parser::ConditionClosedShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// 条件 || 链由条件逻辑与子树左折叠而成，不在 AST 阶段执行布尔运算。
 ast::ExprPtr ASTBuilder::buildConditionLogicalOr(rx::Parser::ConditionLogicalOrExpressionContext *ctx){
     auto operands = ctx->conditionLogicalAndExpression();
     return buildBinaryChain(
@@ -1242,6 +1309,7 @@ ast::ExprPtr ASTBuilder::buildConditionLogicalOr(rx::Parser::ConditionLogicalOrE
     );
 }
 
+// 条件 && 链保存比较子树，短路与布尔类型检查交给后续阶段。
 ast::ExprPtr ASTBuilder::buildConditionLogicalAnd(rx::Parser::ConditionLogicalAndExpressionContext *ctx){
     auto operands = ctx->conditionComparisonExpression();
     return buildBinaryChain(
@@ -1254,6 +1322,7 @@ ast::ExprPtr ASTBuilder::buildConditionLogicalAnd(rx::Parser::ConditionLogicalAn
 }
 
 
+// 条件比较最多包含一个运算符；< 分支的左侧必须走 conditionClosed 入口。
 ast::ExprPtr ASTBuilder::buildConditionComparison(rx::Parser::ConditionComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
         return buildOptionalBinary(
@@ -1310,6 +1379,7 @@ ast::ExprPtr ASTBuilder::buildConditionClosedMultiplicative(rx::Parser::Conditio
     );
 }
 
+// 条件中的最后一次 as 使用 closed 类型，无转换时直接返回条件一元表达式。
 ast::ExprPtr ASTBuilder::buildConditionClosedCast(rx::Parser::ConditionClosedCastExpressionContext *ctx){
     if (ctx->conditionUnaryExpression() != nullptr) {
         return buildConditionUnary(ctx->conditionUnaryExpression());
@@ -1329,6 +1399,7 @@ ast::ExprPtr ASTBuilder::buildConditionUnary(rx::Parser::ConditionUnaryExpressio
     return buildConditionPostfix(ctx->conditionPostfixExpression());
 }
 
+// 基础项用条件入口；调用参数和下标被括号定界，后缀可复用普通构建逻辑。
 ast::ExprPtr ASTBuilder::buildConditionPostfix(rx::Parser::ConditionPostfixExpressionContext *ctx){
     auto result = buildConditionPrimary(ctx->conditionPrimary());
     for (auto *suffix : ctx->postfixSuffix()) {
@@ -1337,6 +1408,7 @@ ast::ExprPtr ASTBuilder::buildConditionPostfix(rx::Parser::ConditionPostfixExpre
     return result;
 }
 
+// 条件规则允许普通块作为基础项，其余形式由不含裸块的入口统一分派。
 ast::ExprPtr ASTBuilder::buildConditionPrimary(rx::Parser::ConditionPrimaryContext *ctx){
     if(ctx->blockExpression() != nullptr){
         return buildBlock(ctx->blockExpression());
@@ -1386,6 +1458,7 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
     }
     if(ctx->RETURN() != nullptr){
         ast::ExprPtr value;
+        // 条件位置的 return 值继续遵守条件规则；无值时仍构建同一种 ReturnExpr。
         if(ctx->conditionExpression() != nullptr){
             value = buildConditionExpression(ctx->conditionExpression());
         }
@@ -1397,6 +1470,7 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
     throw std::runtime_error{"this condition primary is not supported yet"};
 }
 
+// break 值的左侧使用专用入口禁止以裸块起始，赋值右侧恢复普通条件规则。
 ast::ExprPtr ASTBuilder::buildConditionBreakExpression(rx::Parser::ConditionBreakExpressionContext *ctx){
     auto assignment = ctx->conditionBreakAssignmentExpression();
     return buildAssignment(
@@ -1408,6 +1482,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakExpression(rx::Parser::ConditionBrea
     );
 }
 
+// break 的起始限制只传给首个逻辑与子树，其后的 || 项使用普通条件入口。
 ast::ExprPtr ASTBuilder::buildConditionBreakLogicalOr(rx::Parser::ConditionBreakLogicalOrExpressionContext *ctx){
     auto operands = ctx->conditionLogicalAndExpression();
     return buildBinaryChain(
@@ -1419,6 +1494,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakLogicalOr(rx::Parser::ConditionBreak
     );
 }
 
+// 首个比较使用 conditionBreak 入口，后续 && 项按普通条件规则构建。
 ast::ExprPtr ASTBuilder::buildConditionBreakLogicalAnd(rx::Parser::ConditionBreakLogicalAndExpressionContext *ctx){
     auto operands = ctx->conditionComparisonExpression();
     return buildBinaryChain(
@@ -1430,6 +1506,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakLogicalAnd(rx::Parser::ConditionBrea
     );
 }
 
+// 比较左侧保留 break 起始限制，< 分支额外约束末尾类型；右侧用条件入口。
 ast::ExprPtr ASTBuilder::buildConditionBreakComparison(rx::Parser::ConditionBreakComparisonExpressionContext *ctx){
     if(ctx->LT() != nullptr){
         return buildOptionalBinary(
@@ -1462,6 +1539,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakBitOr(rx::Parser::ConditionBreakBitO
     );
 }
 
+// 首个按位与子树用 break 专用入口，后续异或项用普通条件入口。
 ast::ExprPtr ASTBuilder::buildConditionBreakBitXor(rx::Parser::ConditionBreakBitXorExpressionContext *ctx){
     auto operands = ctx->conditionBitAndExpression();
     return buildBinaryChain(
@@ -1473,6 +1551,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakBitXor(rx::Parser::ConditionBreakBit
     );
 }
 
+// 首个移位子树保留 break 起始限制，后续按位与项按条件规则构建。
 ast::ExprPtr ASTBuilder::buildConditionBreakBitAnd(rx::Parser::ConditionBreakBitAndExpressionContext *ctx){
     auto operands = ctx->conditionShiftExpression();
     return buildBinaryChain(
@@ -1484,10 +1563,12 @@ ast::ExprPtr ASTBuilder::buildConditionBreakBitAnd(rx::Parser::ConditionBreakBit
     );
 }
 
+// 通过实际 Context 区分首项的 break 限制和后续项的普通条件规则。
 ast::ExprPtr ASTBuilder::buildConditionBreakShift(rx::Parser::ConditionBreakShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// 单项同时保留 break 和 closed 限制；多项链将两种限制分别放在首尾。
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitOr(rx::Parser::ConditionBreakClosedBitOrExpressionContext *ctx){
     if (ctx->conditionBreakClosedBitXorExpression() != nullptr) {
         return buildConditionBreakClosedBitXor(ctx->conditionBreakClosedBitXorExpression());
@@ -1506,6 +1587,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitOr(rx::Parser::ConditionBre
     );
 }
 
+// 首个按位与子树限制 break 起点，最后一个子树使用条件 closed 入口。
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitXor(rx::Parser::ConditionBreakClosedBitXorExpressionContext *ctx){
     if (ctx->conditionBreakClosedBitAndExpression() != nullptr) {
         return buildConditionBreakClosedBitAnd(ctx->conditionBreakClosedBitAndExpression());
@@ -1524,6 +1606,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitXor(rx::Parser::ConditionBr
     );
 }
 
+// 按位与链中间项用普通条件入口，首尾分别保留 break 和 closed 限制。
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitAnd(rx::Parser::ConditionBreakClosedBitAndExpressionContext *ctx){
     if (ctx->conditionBreakClosedShiftExpression() != nullptr) {
         return buildConditionBreakClosedShift(ctx->conditionBreakClosedShiftExpression());
@@ -1542,10 +1625,12 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedBitAnd(rx::Parser::ConditionBr
     );
 }
 
+// 与其他移位入口共用遍历，首项及末项的限制由各自 Context 决定。
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedShift(rx::Parser::ConditionBreakClosedShiftExpressionContext *ctx){
     return buildShiftChain(ctx);
 }
 
+// 加减链只有首个乘法子树使用 break 专用入口，后续项用普通条件入口。
 ast::ExprPtr ASTBuilder::buildConditionBreakAdditive(rx::Parser::ConditionBreakAdditiveExpressionContext *ctx){
     auto operands = ctx->conditionMultiplicativeExpression();
     return buildBinaryChain(
@@ -1557,6 +1642,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakAdditive(rx::Parser::ConditionBreakA
     );
 }
 
+// 首个 cast 子树保留 break 起点限制，再左折叠后续条件乘除取模操作数。
 ast::ExprPtr ASTBuilder::buildConditionBreakMultiplicative(rx::Parser::ConditionBreakMultiplicativeExpressionContext *ctx){
     auto operands = ctx->conditionCastExpression();
     return buildBinaryChain(
@@ -1568,6 +1654,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakMultiplicative(rx::Parser::Condition
     );
 }
 
+// break 值从专用一元入口开始，其后的连续 as 转换复用公共构建逻辑。
 ast::ExprPtr ASTBuilder::buildConditionBreakCast(rx::Parser::ConditionBreakCastExpressionContext *ctx){
     return buildCastChain(buildConditionBreakUnary(ctx->conditionBreakUnaryExpression()), ctx->typeRef());
 }
@@ -1610,6 +1697,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedMultiplicative(rx::Parser::Con
     );
 }
 
+// 无转换时保留 break 一元入口，最后一次 as 则使用 closed 类型入口。
 ast::ExprPtr ASTBuilder::buildConditionBreakClosedCast(rx::Parser::ConditionBreakClosedCastExpressionContext *ctx){
     if (ctx->conditionBreakUnaryExpression() != nullptr) {
         return buildConditionBreakUnary(ctx->conditionBreakUnaryExpression());
@@ -1629,6 +1717,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakUnary(rx::Parser::ConditionBreakUnar
     return buildConditionBreakPostfix(ctx->conditionBreakPostfixExpression());
 }
 
+// 此处直接使用不含裸块的基础项，防止 break 吞掉后面的 if / while 主体块。
 ast::ExprPtr ASTBuilder::buildConditionBreakPostfix(rx::Parser::ConditionBreakPostfixExpressionContext *ctx){
     auto result = buildConditionPrimaryWithoutBareBlock(ctx->conditionPrimaryWithoutBareBlock());
     for (auto *suffix : ctx->postfixSuffix()) {
@@ -1637,6 +1726,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakPostfix(rx::Parser::ConditionBreakPo
     return result;
 }
 
+// then 固定为块；else if 递归形成 IfExpr，else 块形成 BlockExpr，无 else 为 nullptr。
 ast::ExprPtr ASTBuilder::buildIf(rx::Parser::IfExpressionContext *ctx){
     auto condition = buildConditionExpression(ctx->conditionExpression());
     auto thenBranch = buildBlock(ctx->blockExpression(0));
@@ -1695,6 +1785,7 @@ ast::ExprPtr ASTBuilder::buildExpressionWithBlock(rx::Parser::ExpressionWithBloc
     throw std::runtime_error{"this expression with block is not supported yet"};
 }
 
+// 从绑定提取名称和 mut，再构建必需的声明类型；绑定可变性与引用可变性分开。
 std::unique_ptr<ast::FunctionParam> ASTBuilder::buildNamedParam(rx::Parser::FunctionParamContext *ctx){
     auto binding = ctx->identifierBinding();
 
@@ -1764,6 +1855,7 @@ std::unique_ptr<ast::ArrayTypeRef> ASTBuilder::buildArrayType(rx::Parser::ArrayT
     return std::make_unique<ast::ArrayTypeRef>(std::move(elementType), std::move(count));
 }
 
+// 两个标记区分 self、mut self、&self、&mut self；生命周期注解不进入 AST。
 std::unique_ptr<ast::SelfFunctionParam> ASTBuilder::buildSelfParam(rx::Parser::SelfParamContext *ctx) {
     bool isReference = ctx->AMP() != nullptr;
     bool isMutable = ctx->MUT() != nullptr;

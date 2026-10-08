@@ -7,6 +7,7 @@
 #include <optional>
 namespace rx::ast{
 
+// 所有节点共用虚析构和 dump 接口，允许通过基类指针持有和输出具体节点。
 struct ASTNode{
     virtual ~ASTNode() = default;
     virtual void dump(std::ostream &out, int indent = 0) const = 0;
@@ -18,10 +19,13 @@ class Stmt : public ASTNode {};
 
 class Expr : public ASTNode {};
 
+// 父节点独占子节点；构造函数用 std::move 接收所有权，访问器只提供只读视图。
+// 可选子节点的访问器返回指针，调用方需要先检查 nullptr；必需子节点返回引用。
 using ItemPtr = std::unique_ptr<Item>;
 using ExprPtr = std::unique_ptr<Expr>;
 using StmtPtr = std::unique_ptr<Stmt>;
 
+// 单独的分号形成空语句，不等同于单元值表达式 ()。
 class EmptyStmt final : public Stmt {
 public:
     void dump(std::ostream &out, int indent = 0) const override;
@@ -29,9 +33,10 @@ public:
 
 //the top floor
 class Crate : public ASTNode{
-    std::vector<ItemPtr> items_;
+    std::vector<ItemPtr> items_;  // 按源码顺序持有顶层声明；解析后丢弃的 use 不在其中。
 
 public:
+    // 接收一个声明节点的所有权并追加到顶层列表。
     void addItem(ItemPtr item){
         items_.push_back(std::move(item));
     }
@@ -42,13 +47,15 @@ public:
 };
 
 class BlockExpr final : public Expr{
-    std::vector<StmtPtr> stmts_;
-    ExprPtr tail_;
+    std::vector<StmtPtr> stmts_;  // 块内的语句序列，不包含用于产生块结果的尾表达式。
+    ExprPtr tail_;  // nullptr 表示没有尾表达式；有值时保存末尾无分号的表达式。
 public:
+    // 语句按出现顺序追加，后续阶段按此顺序处理。
     void addStatement(StmtPtr statement){ 
         stmts_.push_back(std::move(statement));
     }
     
+    // 尾表达式单独保存，其结果决定正常结束时的块结果。
     void setTail(ExprPtr tail){
         tail_ = std::move(tail);
     }
@@ -88,8 +95,8 @@ public:
 };
 
 class ReferenceTypeRef final : public TypeRef {
-    std::unique_ptr<TypeRef> referent_;
-    bool isMutable_;
+    std::unique_ptr<TypeRef> referent_;    // 被引用的类型 T
+    bool isMutable_;  // 当前这一层是否为 &mut；多层引用通过嵌套节点表示。
 
 public:
     ReferenceTypeRef(std::unique_ptr<TypeRef> referent, bool isMutable)
@@ -103,9 +110,9 @@ public:
 
 class NamedFunctionParam final : public FunctionParam {
 private:
-    std::string name_;
-    bool isMutable_;
-    std::unique_ptr<TypeRef> type_;
+    std::string name_;  // 参数绑定的名称。
+    bool isMutable_;  // mut x 中绑定是否可变，与参数类型是否为 &mut 独立。
+    std::unique_ptr<TypeRef> type_;  // 文法要求普通参数显式声明类型。
 
 public:
     NamedFunctionParam(std::string name, bool isMutable, std::unique_ptr<TypeRef> type)
@@ -120,8 +127,8 @@ public:
 
 class SelfFunctionParam final : public FunctionParam {
 private:
-    bool isReference_;
-    bool isMutable_;
+    bool isReference_;  // true 表示 &self 或 &mut self，false 表示按值接收 self。
+    bool isMutable_;  // 有引用时表示 &mut self，否则表示 mut self。
 
 public:
     SelfFunctionParam(bool isReference, bool isMutable)
@@ -135,11 +142,11 @@ public:
 
 class FunctionItem final : public Item{
 private:
-    std::string name_;
+    std::string name_;  // 函数或关联方法的声明名称。
     std::unique_ptr<SelfFunctionParam> selfParam_;   // nullptr 表示没有 self 参数
     std::vector<std::unique_ptr<FunctionParam>> parameters_;  // 可以为空，表示没有普通参数
     std::unique_ptr<TypeRef> returnType_;  // nullptr 表示没有写 -> 类型
-    std::unique_ptr<BlockExpr> body_;
+    std::unique_ptr<BlockExpr> body_;  // 函数体，包含语句和可选尾表达式。
     bool hasGenericParameters_;  // main 禁止声明泛型形参；无需保留生命周期名称和约束。
 public:
     FunctionItem(
@@ -163,9 +170,9 @@ public:
 
 // const NAME: Type = value;：保存声明类型和未求值的常量表达式。
 class ConstItem final : public Item {
-    std::string name_;
-    std::unique_ptr<TypeRef> type_;
-    ExprPtr value_;
+    std::string name_;  // 常量声明名称。
+    std::unique_ptr<TypeRef> type_;  // const 必须显式声明的类型。
+    ExprPtr value_;  // 初始化表达式，尚未进行常量求值。
 
 public:
     ConstItem(std::string name, std::unique_ptr<TypeRef> type, ExprPtr value)
@@ -180,8 +187,8 @@ public:
 
 // 字段类型复用 TypeRef；字段重名和类型是否合法留给语义分析。
 class StructField final : public ASTNode {
-    std::string name_;
-    std::unique_ptr<TypeRef> type_;
+    std::string name_;  // 字段声明名称，用于后续字段查找和重名检查。
+    std::unique_ptr<TypeRef> type_;  // 字段的声明类型，可嵌套引用、数组和类型路径。
 
 public:
     StructField(std::string name, std::unique_ptr<TypeRef> type)
@@ -197,7 +204,7 @@ class OuterAttribute : public ASTNode {};
 
 // #[derive(...)]：保留每个属性的边界，以及名称的顺序、重复和空列表。
 class DeriveAttribute final : public OuterAttribute {
-    std::vector<std::string> names_;
+    std::vector<std::string> names_;  // 此次 derive 括号内的名称，不去重也不合并其他属性。
 
 public:
     explicit DeriveAttribute(std::vector<std::string> names)
@@ -210,9 +217,9 @@ public:
 
 // struct NAME { field: Type, ... }：按源码顺序保存字段，也允许空字段列表。
 class StructItem final : public Item {
-    std::string name_;
-    std::vector<std::unique_ptr<StructField>> fields_;
-    std::vector<std::unique_ptr<OuterAttribute>> attributes_;
+    std::string name_;  // 结构体的声明名称。
+    std::vector<std::unique_ptr<StructField>> fields_;  // 独占字段节点，空列表表示空结构体。
+    std::vector<std::unique_ptr<OuterAttribute>> attributes_;  // 按顺序保留各个外部属性。
 
 public:
     StructItem(std::string name, std::vector<std::unique_ptr<StructField>> fields,
@@ -228,8 +235,8 @@ public:
 
 // impl 是独立的声明节点，按源码顺序保存方法和关联常量。
 class ImplItem final : public Item {
-    std::unique_ptr<TypeRef> type_;
-    std::vector<ItemPtr> items_;
+    std::unique_ptr<TypeRef> type_;  // impl 后面的目标类型，是否合法由语义分析判断。
+    std::vector<ItemPtr> items_;  // 关联函数和关联常量，保留各声明的源码顺序。
 
 public:
     ImplItem(std::unique_ptr<TypeRef> type, std::vector<ItemPtr> items)
@@ -243,9 +250,9 @@ public:
 
 //version 1.1
 class LetStmt final : public Stmt{
-    std::string name_;
-    bool isMutable_;
-    ExprPtr initializer_;
+    std::string name_;  // 局部变量绑定名称。
+    bool isMutable_;  // let mut 是否允许后续修改此绑定。
+    ExprPtr initializer_;  // 当前文法要求存在初始化表达式。
     std::unique_ptr<TypeRef> type_;  // nullptr 表示省略类型注解，后续需要类型推导。
 
 public:
@@ -263,7 +270,7 @@ public:
 };
 
 class ExprStmt final : public Stmt {
-    ExprPtr expression_;
+    ExprPtr expression_;  // 作为语句使用的表达式，与块尾表达式分开保存。
     bool hasSemicolon_;  // 非末尾的带块语句省略分号时，需要检查结果为 () 或 never。
 
 public:
@@ -295,7 +302,7 @@ public:
 };
 
 class BooleanLiteralExpr final : public Expr{
-    bool flag_;
+    bool flag_;  // true / false 字面量对应的布尔值。
 
 public:
     BooleanLiteralExpr(bool flag): flag_(flag){};
@@ -308,9 +315,9 @@ public:
 //1.2
 class BinaryExpr final : public Expr {
 private:
-    std::string op_;
-    ExprPtr left_;
-    ExprPtr right_;
+    std::string op_;  // 二元运算符原文；优先级和结合顺序由子树结构表达。
+    ExprPtr left_;  // 左操作数。
+    ExprPtr right_;  // 右操作数；逻辑运算的短路行为留给后续阶段处理。
 
 public:
     BinaryExpr(std::string op, ExprPtr left, ExprPtr right): op_(std::move(op)), left_(std::move(left)), right_(std::move(right)) {}
@@ -324,7 +331,7 @@ public:
 
 class UnaryExpr final : public Expr{
     std::string op_;  // -、!、*、& 或 &mut；连续借用保存为嵌套节点。
-    ExprPtr operand_;
+    ExprPtr operand_;  // 前缀运算符作用的表达式，可继续嵌套一元运算。
 
 public:
     UnaryExpr(std::string op, ExprPtr operand): op_(std::move(op)), operand_(std::move(operand)){};
@@ -336,7 +343,7 @@ public:
 };
 
 class CastExpr final : public Expr {
-    ExprPtr value_;
+    ExprPtr value_;  // as 左侧待转换的值表达式。
     std::unique_ptr<TypeRef> type_;  // as 的右侧是类型，不是值表达式。
 
 public:
@@ -349,11 +356,12 @@ public:
     void dump(std::ostream &out, int indent = 0) const override;
 };
 
+// 泛型实参只保留具体类型节点；生命周期实参在构建时丢弃。
 using GenericArgs = std::vector<std::unique_ptr<TypeRef>>;
 
 // eg.Container::<i32>::new::<u32>()
 class PathSegment final : public ASTNode { //每个路径段保存自己的名称和泛型参数，防止 `Container` 和 `new` 的参数混在一起。
-    std::string name_;
+    std::string name_;  // 当前路径段的名称，也可能是 self 或 Self。
     // nullopt 表示省略参数；空列表表示显式写了 ::<>。
     std::optional<GenericArgs> genericArgs_;
 
@@ -372,7 +380,7 @@ public:
 
 // 类型路径复用路径段；嵌套引用、数组和容器实参均保存为 TypeRef。
 class TypePathRef final : public TypeRef {
-    std::vector<std::unique_ptr<PathSegment>> segments_;
+    std::vector<std::unique_ptr<PathSegment>> segments_;  // 以 :: 分隔的类型路径段。
 
 public:
     explicit TypePathRef(std::vector<std::unique_ptr<PathSegment>> segments)
@@ -383,7 +391,7 @@ public:
 };
 
 class PathExpr final : public Expr{
-    std::vector<std::unique_ptr<PathSegment>> segments_;
+    std::vector<std::unique_ptr<PathSegment>> segments_;  // 值位置的路径，名称解析留给语义分析。
 
 public:
     explicit PathExpr(std::vector<std::unique_ptr<PathSegment>> segments)
@@ -395,8 +403,8 @@ public:
 };
 
 class StructExprField final : public ASTNode {
-    std::string name_;
-    ExprPtr value_;
+    std::string name_;  // 构造表达式中 field: value 的字段名称。
+    ExprPtr value_;  // 该字段的初始化表达式，与字段声明类型分开表示。
 
 public:
     StructExprField(std::string name, ExprPtr value)
@@ -410,8 +418,8 @@ public:
 
 // 路径保留泛型实参；初始化字段按源码顺序保存，供后续确定求值顺序。
 class StructExpr final : public Expr {
-    std::unique_ptr<PathExpr> path_;
-    std::vector<std::unique_ptr<StructExprField>> fields_;
+    std::unique_ptr<PathExpr> path_;  // 被构造结构体的路径，含各段具体类型实参。
+    std::vector<std::unique_ptr<StructExprField>> fields_;  // 字段初始化列表；S {} 时为空。
 
 public:
     StructExpr(std::unique_ptr<PathExpr> path, std::vector<std::unique_ptr<StructExprField>> fields)
@@ -424,8 +432,8 @@ public:
 };
 
 class FieldExpr final : public Expr {
-    ExprPtr base_;
-    std::string field_;
+    ExprPtr base_;  // 点号左侧被访问的表达式，如 a.b 中的 a。
+    std::string field_;  // 点号右侧的字段名称，不包含方法调用信息。
 
 public:
     FieldExpr(ExprPtr base, std::string field): base_(std::move(base)), field_(std::move(field)) {}
@@ -437,9 +445,9 @@ public:
 };
 
 class MethodCallExpr final : public Expr {
-    ExprPtr receiver_;
-    std::unique_ptr<PathSegment> method_;
-    std::vector<ExprPtr> arguments_;
+    ExprPtr receiver_;  // 点号左侧的接收者，后续进行方法查找及自动借用或解引用。
+    std::unique_ptr<PathSegment> method_;  // 方法名称及其显式具体类型实参。
+    std::vector<ExprPtr> arguments_;  // 括号内的显式参数，不包含 receiver。
 
 public:
     MethodCallExpr(ExprPtr receiver, std::unique_ptr<PathSegment> method, std::vector<ExprPtr> arguments)
@@ -454,8 +462,8 @@ public:
 
 class AssignExpr final : public Expr {
 private:
-    ExprPtr target_;
-    ExprPtr value_;
+    ExprPtr target_;  // 等号左侧的目标，是否可赋值由语义分析检查。
+    ExprPtr value_;  // 等号右侧的表达式，也可以是嵌套赋值。
 
 public:
     AssignExpr(ExprPtr target, ExprPtr value): target_(std::move(target)), value_(std::move(value)) {}
@@ -468,9 +476,9 @@ public:
 
 // 保留 += 等原始操作，避免改写成赋值加二元运算后重复求值 target。
 class CompoundAssignExpr final : public Expr {
-    std::string op_;
-    ExprPtr target_;
-    ExprPtr value_;
+    std::string op_;  // +=、-= 等完整复合赋值运算符。
+    ExprPtr target_;  // 保留原始目标表达式，后续生成代码时只求值一次。
+    ExprPtr value_;  // 参与复合运算的右侧表达式。
 
 public:
     CompoundAssignExpr(std::string op, ExprPtr target, ExprPtr value)
@@ -485,9 +493,9 @@ public:
 
 class IfExpr final : public Expr {
 private:
-    ExprPtr condition_;
-    std::unique_ptr<BlockExpr> thenBranch_;
-    ExprPtr elseBranch_;
+    ExprPtr condition_;  // if 后面的条件表达式，布尔类型检查留给语义分析。
+    std::unique_ptr<BlockExpr> thenBranch_;  // 条件成立时执行的块。
+    ExprPtr elseBranch_;  // nullptr 表示无 else；否则为块或嵌套的 IfExpr。
 
 public:
     IfExpr(ExprPtr condition, std::unique_ptr<BlockExpr> thenBranch, ExprPtr elseBranch): condition_(std::move(condition)), thenBranch_(std::move(thenBranch)), elseBranch_(std::move(elseBranch)) {}
@@ -546,7 +554,7 @@ public:
 // loop { ... }：只持有循环体，退出由循环体中的 break 表达式表示。
 class LoopExpr final : public Expr{
 private:
-    std::unique_ptr<BlockExpr> block_;
+    std::unique_ptr<BlockExpr> block_;  // loop 的循环体，保留其语句和尾表达式。
 public:
     explicit LoopExpr(std::unique_ptr<BlockExpr> block): block_(std::move(block)){};
 
@@ -558,8 +566,8 @@ public:
 // while condition { ... }：节点分别持有条件表达式和循环体。
 class WhileExpr final : public Expr{
 private:
-    ExprPtr condition_;
-    std::unique_ptr<BlockExpr> block_;
+    ExprPtr condition_;  // 每轮循环开始前求值的条件表达式。
+    std::unique_ptr<BlockExpr> block_;  // 条件成立时执行的循环体。
 public:
     WhileExpr(ExprPtr condition, std::unique_ptr<BlockExpr> block): condition_(std::move(condition)), block_(std::move(block)){};
 
@@ -572,7 +580,7 @@ public:
 
 class ArrayExpr final : public Expr{
 private:
-    std::vector<ExprPtr> elements_;
+    std::vector<ExprPtr> elements_;  // [a, b, ...] 中按顺序保存的元素；[] 时为空。
 
 public:
     ArrayExpr(std::vector<ExprPtr> elements) : elements_(std::move(elements)){};
@@ -584,7 +592,7 @@ public:
 
 class ArrayRepeatExpr final : public Expr{
 private:
-    ExprPtr value_;
+    ExprPtr value_;  // [value; count] 中待重复的元素表达式，不在 AST 阶段展开。
     ExprPtr count_;   // 保存次数的常量表达式，后续语义分析再求值
 public:
     ArrayRepeatExpr(ExprPtr value, ExprPtr count) : value_(std::move(value)), count_(std::move(count)){};
@@ -597,8 +605,8 @@ public:
 
 class IndexExpr final : public Expr{
 private:
-    ExprPtr base_;
-    ExprPtr index_;
+    ExprPtr base_;  // 被索引的表达式，支持 a[i][j] 这类嵌套索引。
+    ExprPtr index_;  // 方括号内的下标表达式，类型及边界检查留给后续阶段。
 public:
     IndexExpr(ExprPtr base, ExprPtr index) : base_(std::move(base)), index_(std::move(index)){};
 
