@@ -2,16 +2,40 @@
 
 [English](README-EN.md) | [简体中文](README-ZH.md)
 
-A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/) compiler implemented with C++17, ANTLR 4.13.2 and CMake. Development currently focuses on the frontend and AST construction.
+A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/) compiler implemented with C++17, ANTLR 4.13.2 and CMake. Development currently focuses on the AST frontend and semantic-analysis infrastructure.
 
 ## Current status
 
 - Lexing, parsing, syntax diagnostics and AST printing are wired up; AST construction support is being expanded incrementally.
-- `--stage semantic` currently parses the source, builds an AST and prints it to stdout. Name resolution, type checking and other semantic passes are not implemented yet.
+- AST nodes carry `NodeId` and `SourceSpan` for associating external semantic results and locating diagnostics.
+- Separate value/type namespaces, name binding stacks, scope-exit restoration and `ScopeGuard` are implemented, alongside symbol information, declaration indexes and semantic result tables.
+- The first `SemanticChecker` scan collects top-level functions, constants, structs and `impl` associated items, diagnosing duplicate declarations, parameters, fields and invalid `impl` targets. The second scan is still empty; function-body name resolution, type checking and constant evaluation are not implemented.
+- Both `--stage ast` and `--stage semantic` currently only parse the source, build an AST and print it to stdout. `semantic_checker.cpp` is not yet included in the CMake target, and the CLI does not invoke `SemanticChecker`.
 - LLVM IR generation is not implemented; `IR` in `config.mk` is empty.
 - `--stage codegen` retains its CLI entrypoint but reports that code generation is not implemented and exits with code 2. Optimization is also not implemented.
 
 Negative official semantic cases expose the missing semantic checks. Some positive cases may also fail when their syntax is not supported by the AST builder. A successful result currently demonstrates acceptance by the frontend entrypoint, not complete semantic correctness.
+
+## Project layout
+
+```text
+src/
+  main.cpp          CLI entrypoint and frontend pipeline
+  ast/              AST nodes, NodeId, source spans and printing
+  frontend/         ANTLR parse-tree to AST conversion
+  semantic/         Symbols, scopes, declaration collection and results
+grammar/            ANTLR lexer and parser definitions
+generated/          Generated ANTLR C++ sources
+scripts/            Build, parser generation and test runner
+tests/              Local tests and fixtures, kept outside src/
+  ast/              Python AST regression tests
+  semantic/         C++ scope unit tests
+  official/         Official fixtures and manifests
+  custom/           Custom fixtures and manifests
+target/             Build artifacts and test logs
+```
+
+`tests/` is currently ignored by Git. The test subdirectories above describe the local layout and may be absent after cloning.
 
 ## Building and running
 
@@ -23,8 +47,9 @@ Run from the project root:
 make build
 # Optional: adjust build parallelism
 make build BUILD_JOBS=4
+./target/compiler --stage ast path/to/program.rx
 ./target/compiler --stage semantic path/to/program.rx
-./target/compiler --stage semantic path/to/program.rx --dump-tree
+./target/compiler --stage ast path/to/program.rx --dump-tree
 ```
 
 `scripts/build.sh` builds in Release mode using `target/build` and writes the executable to `target/compiler`. If the ANTLR C++ runtime 4.13.2 archive is missing from `.antlr/`, the script downloads it and verifies its SHA-256 checksum.
@@ -39,6 +64,33 @@ make build
 ```
 
 Generated C++ files are included in `generated/`. Ordinary builds do not require Java and do not regenerate the parser automatically.
+
+## Semantic infrastructure
+
+The AST stores syntax, node IDs and source locations. Semantic results live in external tables keyed by IDs rather than additional fields on individual AST node classes.
+
+| File | Responsibility and current status |
+| --- | --- |
+| `src/ast/node_id.hpp` | Allocates node IDs, reserving `0` as invalid; accessed through `ASTNode::id()`. |
+| `src/ast/source_span.hpp` | Source ranges and range merging; ASTBuilder fills them during node construction. |
+| `src/semantic/symbol.hpp` | `SymbolId`, symbol kinds, names, declaration nodes, source locations and mutability information. |
+| `src/semantic/scope.hpp` | Separate value/type name binding stacks, scope undo logs and automatic scope entry/exit through `ScopeGuard`. |
+| `src/semantic/declaration_table.hpp` | Top-level name-to-symbol indexes and function, constant, struct and associated-item information keyed by `SymbolId`. |
+| `src/semantic/semantic_model.hpp` | Retains declarations, symbols, node semantic results and diagnostics. `semantic_model.cpp` is currently empty. |
+| `src/semantic/semantic_checker.hpp`, `.cpp` | `check()` collects declarations before entering the unimplemented second scan. |
+| `src/semantic/type.hpp` | Reserved for the semantic type system and currently empty; `TypeId` is temporarily defined in `semantic_model.hpp`. |
+
+`SourceSpan` uses half-open ranges `[begin, end)`. Lines and columns are 1-based; `offset` is 0-based and counts Unicode code points, not UTF-8 bytes. Locations currently refer to a single input file without storing its filename. A default span denotes an unknown location.
+
+`Scope` only answers which `SymbolId` a name currently refers to; it stores neither type objects nor persistent symbol information. `values_` and `types_` hold separate value-name and type-name binding stacks. Lookup reads the stack top, while scope exit restores bindings by replaying undo entries in reverse. Same-scope duplicates are rejected by default; `allowShadowing=true` permits same-scope shadowing. The semantic checker must still decide whether a particular symbol may be shadowed.
+
+The main `SemanticModel` mappings are:
+
+- `symbols`: `SymbolId -> SymbolInfo`; `declaredSymbols`: declaration-node `NodeId -> SymbolId`.
+- `resolvedSymbols`: name-use-node `NodeId -> SymbolId`; `expressionTypes` and `resolvedTypes` store type IDs for expressions and type references respectively.
+- `constantValues` and `expressionInfo` reserve space for constant values and expression properties; `diagnostics` stores source spans and diagnostic messages.
+
+The first scan currently fills only `declarations`, `symbols`, `declaredSymbols` and `diagnostics`, without producing unchecked expression results. It collects ordinary top-level declarations before processing `impl` blocks, so declaration indexes do not depend on source order. Declaration-table pointers do not own the AST, which must outlive the corresponding `SemanticModel`. Exiting a local scope restores name bindings without deleting symbols or resolved results from the model.
 
 ## Tests and configuration
 
@@ -74,6 +126,15 @@ make test-ast
 ```
 
 This builds the compiler and runs the `test_*builder.py` suites, comparing AST output. These local suites are also not tracked in Git. A missing directory produces an explicit error.
+
+The scope unit test is in `tests/semantic/scope_test.cpp` and is not run automatically by `make test` or `make test-ast`. It currently references the old `resolved_symbols` field instead of the model's `resolvedSymbols`, so compilation fails until the test is updated. Once synchronized, run it independently:
+
+```sh
+mkdir -p target/tests/unit
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Isrc/ast \
+    tests/semantic/scope_test.cpp -o target/tests/unit/scope_test
+./target/tests/unit/scope_test
+```
 
 Set `STAGE` explicitly to `semantic`, `ir`, `codegen` or `optimization`; `STAGE=` selects all stages. IR is currently unconfigured, and codegen/optimization cannot pass yet. Enable them as their implementations become available. The template's Rust reference helpers remain in `crates/rx`, but default test commands now use the custom compiler.
 

@@ -2,16 +2,40 @@
 
 [English](README-EN.md) | [简体中文](README-ZH.md)
 
-使用 C++17、ANTLR 4.13.2 和 CMake 实现的 [Rx 语言](https://acmclasscourse-2025.github.io/rx-compiler-specification/)编译器，目前处于前端与 AST 构建阶段。
+使用 C++17、ANTLR 4.13.2 和 CMake 实现的 [Rx 语言](https://acmclasscourse-2025.github.io/rx-compiler-specification/)编译器，目前正在开发 AST 前端与语义分析基础设施。
 
 ## 当前进度
 
 - 已接入词法分析、语法分析、语法错误诊断和 AST 打印；正在逐步扩展 AST 构建支持。
-- `--stage semantic` 当前执行解析、构建 AST 并打印到标准输出；名字解析、类型检查等语义分析尚未实现。
+- AST 节点已有 `NodeId` 和 `SourceSpan`，用于关联外部语义结果与定位诊断。
+- 已实现值／类型命名空间、名字绑定栈、作用域退出恢复和 `ScopeGuard`，以及符号信息、声明索引和语义结果表。
+- `SemanticChecker` 的第一轮扫描已收集顶层函数、常量、结构体及 `impl` 关联项，并诊断重复声明、参数、字段及无效 `impl` 目标。第二轮扫描仍为空；函数体名字解析、类型检查和常量求值尚未实现。
+- `--stage ast` 与 `--stage semantic` 目前均只解析源码、构建 AST 并打印到标准输出。`semantic_checker.cpp` 尚未加入 CMake 编译目标，命令行也尚未调用 `SemanticChecker`。
 - LLVM IR 尚未实现，`config.mk` 中的 `IR` 留空。
 - `--stage codegen` 保留命令行入口，当前会报告未实现并返回退出码 2；优化阶段同样尚未实现。
 
 官方 semantic 测试中的拒绝用例会暴露缺失的语义检查；部分合法用例也可能因 AST 尚未支持对应语法而失败。现阶段的成功结果只表示通过了当前前端入口，不能据此认定完整语义正确。
+
+## 项目结构
+
+```text
+src/
+  main.cpp          命令行入口与前端流程
+  ast/              AST 节点、NodeId、源码范围与打印
+  frontend/         ANTLR 解析树到 AST 的转换
+  semantic/         符号、作用域、声明收集与语义结果
+grammar/            ANTLR 词法与语法定义
+generated/          已生成的 ANTLR C++ 代码
+scripts/            构建、解析器生成与测试运行器
+tests/              本地测试与用例，不放在 src/ 中
+  ast/              Python AST 回归测试
+  semantic/         C++ 作用域单元测试
+  official/         官方测试用例与 manifest
+  custom/           自定义测试用例与 manifest
+target/             编译产物和测试日志
+```
+
+`tests/` 当前被 Git 忽略，以上测试子目录描述的是本地布局，不保证克隆后存在。
 
 ## 构建与运行
 
@@ -23,8 +47,9 @@
 make build
 # 可选：调整构建并行度
 make build BUILD_JOBS=4
+./target/compiler --stage ast path/to/program.rx
 ./target/compiler --stage semantic path/to/program.rx
-./target/compiler --stage semantic path/to/program.rx --dump-tree
+./target/compiler --stage ast path/to/program.rx --dump-tree
 ```
 
 构建入口为 `scripts/build.sh`，使用 Release 配置，构建目录为 `target/build`，可执行文件为 `target/compiler`。脚本会在 `.antlr/` 缺少 ANTLR C++ runtime 4.13.2 压缩包时下载并校验 SHA-256。
@@ -39,6 +64,33 @@ make build
 ```
 
 生成的 C++ 文件已经包含在 `generated/`，普通构建不需要 Java，也不会自动重新生成解析器。
+
+## 语义基础设施
+
+AST 保存语法结构、节点 ID 与源码位置；语义结果通过 ID 存在外部表中，不直接增加到各类 AST 节点上。
+
+| 文件 | 职责与当前状态 |
+| --- | --- |
+| `src/ast/node_id.hpp` | 分配节点 ID，`0` 保留为无效 ID；`ASTNode::id()` 提供访问。 |
+| `src/ast/source_span.hpp` | 源码范围与范围合并；ASTBuilder 在构建节点时填写。 |
+| `src/semantic/symbol.hpp` | `SymbolId`、符号种类及名字、声明节点、源码位置、可变性等符号信息。 |
+| `src/semantic/scope.hpp` | 分开的值／类型名字绑定栈、作用域撤销日志和自动进入／退出作用域的 `ScopeGuard`。 |
+| `src/semantic/declaration_table.hpp` | 顶层名字到符号的索引，以及以 `SymbolId` 为键的函数、常量、结构体和关联项信息。 |
+| `src/semantic/semantic_model.hpp` | 持久保存声明、符号、节点语义结果及诊断。`semantic_model.cpp` 目前为空。 |
+| `src/semantic/semantic_checker.hpp`、`.cpp` | `check()` 先收集声明，再进入尚待实现的第二轮检查。 |
+| `src/semantic/type.hpp` | 预留给语义类型系统，目前为空；`TypeId` 暂时定义在 `semantic_model.hpp` 中。 |
+
+`SourceSpan` 使用左闭右开区间 `[begin, end)`：行列从 1 开始，`offset` 从 0 开始、按 Unicode 码点计数，而不是 UTF-8 字节。当前位置相对于单个输入文件，不保存文件名；默认范围表示未知位置。
+
+`Scope` 只回答“当前这个名字绑定到哪个 `SymbolId`”，不保存类型对象或永久符号信息。`values_` 与 `types_` 分别保存值名与类型名的绑定栈，查找取栈顶，退出作用域按撤销日志逆序恢复。默认拒绝同层重名，传入 `allowShadowing=true` 可允许同层遮蔽；是否允许遮蔽特定符号仍由语义检查器决定。
+
+`SemanticModel` 的主要映射为：
+
+- `symbols`：`SymbolId -> SymbolInfo`；`declaredSymbols`：声明节点 `NodeId -> SymbolId`。
+- `resolvedSymbols`：名字使用节点 `NodeId -> SymbolId`；`expressionTypes`、`resolvedTypes` 分别保存表达式和类型引用的类型 ID。
+- `constantValues`、`expressionInfo` 预留常量值与表达式属性；`diagnostics` 保存源码范围和诊断消息。
+
+目前第一轮扫描只填充 `declarations`、`symbols`、`declaredSymbols` 和 `diagnostics`，不产生未经检查的表达式结果。它先收集普通顶层声明，再处理 `impl`，使声明索引不受源码先后顺序限制。声明表持有不拥有 AST 的指针，因此对应 AST 必须比 `SemanticModel` 活得更久；退出局部作用域只恢复名字绑定，不删除模型中的符号或解析结果。
 
 ## 测试与配置
 
@@ -74,6 +126,15 @@ make test-ast
 ```
 
 该命令先构建编译器，再运行 `test_*builder.py` 套件并比对 AST 输出；这些本地测试同样尚未纳入 Git。目录不存在时会明确报错。
+
+作用域单元测试位于 `tests/semantic/scope_test.cpp`，不由 `make test` 或 `make test-ast` 自动运行。当前测试仍引用旧字段名 `resolved_symbols`，与模型中的 `resolvedSymbols` 不一致，因此暂时无法编译；同步测试后可独立运行：
+
+```sh
+mkdir -p target/tests/unit
+c++ -std=c++17 -Wall -Wextra -Wpedantic -Isrc/ast \
+    tests/semantic/scope_test.cpp -o target/tests/unit/scope_test
+./target/tests/unit/scope_test
+```
 
 `STAGE` 可显式设为 `semantic`、`ir`、`codegen` 或 `optimization`；`STAGE=` 表示选择全部阶段。目前 IR 未配置，codegen 与 optimization 尚不能通过，待实现后再启用。原模板的 Rust 参考辅助代码仍保留在 `crates/rx`，默认测试命令已切换为自研编译器。
 
