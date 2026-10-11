@@ -116,3 +116,27 @@ public:
         return lookupCurrent(types_, name);
     }
 };
+
+class ScopeGuard {
+    Scope *scope_;
+
+public:
+    explicit ScopeGuard(Scope &scope): scope_(&scope) {
+        scope_->pushScope();
+    }
+
+    ~ScopeGuard() {
+        if (scope_ != nullptr) {
+            scope_->popScope();
+        }
+    }
+
+    ScopeGuard(const ScopeGuard &) = delete;
+    ScopeGuard &operator=(const ScopeGuard &) = delete;
+
+    ScopeGuard(ScopeGuard &&other) noexcept: scope_(other.scope_) {
+        other.scope_ = nullptr;
+    }
+
+    ScopeGuard &operator=(ScopeGuard &&) = delete;
+};
