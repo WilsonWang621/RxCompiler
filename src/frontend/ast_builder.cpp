@@ -1,13 +1,65 @@
 #include"ast_builder.hpp"
 
 #include <stdexcept>
+#include <limits>
+#include <utility>
 
 namespace {
+
+// ANTLR 的 token 结束下标是闭区间，转换为 AST 使用的开区间。
+rx::ast::SourceSpan sourceSpan(const antlr4::Token *token){
+    if(token == nullptr || token->getLine() == 0 ||
+       token->getStartIndex() == std::numeric_limits<std::size_t>::max()){
+        return {};
+    }
+    rx::ast::SourcePosition begin{
+        token->getStartIndex(), token->getLine(), token->getCharPositionInLine() + 1
+    };
+    if(token->getType() == antlr4::Token::EOF){
+        return {begin, begin};
+    }
+    if(token->getStopIndex() == std::numeric_limits<std::size_t>::max() ||
+       token->getStopIndex() < token->getStartIndex()){
+        return {};
+    }
+    auto end = begin;
+    end.offset = token->getStopIndex() + 1;
+    // getText() 为 UTF-8；跳过续字节，使列数与 ANTLR 的码点计数一致。
+    for(unsigned char character : token->getText()){
+        if((character & 0xc0) == 0x80) continue;
+        if(character == '\n'){
+            ++end.line;
+            end.column = 1;
+        }else{
+            ++end.column;
+        }
+    }
+    return {begin, end};
+}
+
+rx::ast::SourceSpan sourceSpan(antlr4::ParserRuleContext *ctx){
+    if(ctx == nullptr) return {};
+    return rx::ast::SourceSpan::covering(sourceSpan(ctx->getStart()), sourceSpan(ctx->getStop()));
+}
+
+// 构建节点时统一填写位置，派生类构造函数仍只接收语法数据。
+template<class Node, class... Args>
+std::unique_ptr<Node> makeNode(rx::ast::SourceSpan span, Args&&... args){
+    auto node = std::make_unique<Node>(std::forward<Args>(args)...);
+    node->setSourceSpan(span);
+    return node;
+}
+
+template<class Node>
+std::unique_ptr<Node> withSourceSpan(std::unique_ptr<Node> node, rx::ast::SourceSpan span){
+    node->setSourceSpan(span);
+    return node;
+}
 
 // Lexer 已验证进制、下划线和类型后缀；各表达式入口共用节点构建。
 rx::ast::ExprPtr buildIntegerLiteral(antlr4::tree::TerminalNode *integer) {
     // 保留完整原文，后续语义分析再按进制求值并处理类型后缀及范围。
-    return std::make_unique<rx::ast::IntegerLiteralExpr>(integer->getText());
+    return makeNode<rx::ast::IntegerLiteralExpr>(sourceSpan(integer->getSymbol()), integer->getText());
 }
 
 // 优先级已由解析树确定；这里只把同一层的左结合运算依次折叠成 BinaryExpr。
@@ -18,7 +70,8 @@ rx::ast::ExprPtr buildBinaryChain(rx::ast::ExprPtr result, const std::vector<Ope
         std::string op = operators[i]->getText();
         auto right = buildRight(i);
 
-        result = std::make_unique<rx::ast::BinaryExpr>(
+        auto span = rx::ast::SourceSpan::covering(result->sourceSpan(), right->sourceSpan());
+        result = makeNode<rx::ast::BinaryExpr>(span,
             std::move(op),
             std::move(result),
             std::move(right)
@@ -36,7 +89,8 @@ rx::ast::ExprPtr buildOptionalBinary(rx::ast::ExprPtr left, OperatorContext *op,
 
     std::string text = op->getText();
     auto right = buildRight();
-    return std::make_unique<rx::ast::BinaryExpr>(
+    auto span = rx::ast::SourceSpan::covering(left->sourceSpan(), right->sourceSpan());
+    return makeNode<rx::ast::BinaryExpr>(span,
         std::move(text),
         std::move(left),
         std::move(right)
@@ -50,12 +104,13 @@ rx::ast::ExprPtr buildAssignment(rx::ast::ExprPtr left, rx::Parser::AssignmentOp
         return left;
     }
     auto right = buildRight();
+    auto span = rx::ast::SourceSpan::covering(left->sourceSpan(), right->sourceSpan());
     if (op->equalsSign() == nullptr) {
-        return std::make_unique<rx::ast::CompoundAssignExpr>(
+        return makeNode<rx::ast::CompoundAssignExpr>(span,
             op->getText(), std::move(left), std::move(right)
         );
     }
-    return std::make_unique<rx::ast::AssignExpr>(
+    return makeNode<rx::ast::AssignExpr>(span,
         std::move(left),
         std::move(right)
     );
@@ -63,28 +118,40 @@ rx::ast::ExprPtr buildAssignment(rx::ast::ExprPtr left, rx::Parser::AssignmentOp
 
 // 将已构建的操作数包装为一元节点；&& 借用需要拆成两层 &。
 rx::ast::ExprPtr buildUnaryOperator(rx::Parser::UnaryOperatorContext *ctx, rx::ast::ExprPtr operand) {
+    auto span = rx::ast::SourceSpan::covering(sourceSpan(ctx), operand->sourceSpan());
     if (ctx->AMP() != nullptr || ctx->ANDAND() != nullptr) {
-        operand = std::make_unique<rx::ast::UnaryExpr>(
+        auto innerSpan = span;
+        if(ctx->ANDAND() != nullptr){
+            ++innerSpan.begin.offset;
+            ++innerSpan.begin.column;
+        }
+        operand = makeNode<rx::ast::UnaryExpr>(innerSpan,
             ctx->MUT() != nullptr ? "&mut" : "&", std::move(operand)
         );
         // &&mut x 等价于 &(&mut x)，mut 只属于内层借用。
         if (ctx->ANDAND() != nullptr) {
-            operand = std::make_unique<rx::ast::UnaryExpr>("&", std::move(operand));
+            operand = makeNode<rx::ast::UnaryExpr>(span, "&", std::move(operand));
         }
         return operand;
     }
-    return std::make_unique<rx::ast::UnaryExpr>(ctx->getText(), std::move(operand));
+    return makeNode<rx::ast::UnaryExpr>(span, ctx->getText(), std::move(operand));
 }
 
 template<class Context>
 std::unique_ptr<rx::ast::TypeRef> buildReferenceType(Context *ctx, std::unique_ptr<rx::ast::TypeRef> referent) {
     // lifetime 已通过语法检查，在 AST 阶段丢弃；保留引用层数和可变性。
-    referent = std::make_unique<rx::ast::ReferenceTypeRef>(
+    auto span = sourceSpan(ctx);
+    auto innerSpan = span;
+    if(ctx->ANDAND() != nullptr){
+        ++innerSpan.begin.offset;
+        ++innerSpan.begin.column;
+    }
+    referent = makeNode<rx::ast::ReferenceTypeRef>(innerSpan,
         std::move(referent), ctx->MUT() != nullptr
     );
     // 类型中的 && 同样表示两层引用，生命周期与 mut 只属于内层。
     if (ctx->ANDAND() != nullptr) {
-        referent = std::make_unique<rx::ast::ReferenceTypeRef>(std::move(referent), false);
+        referent = makeNode<rx::ast::ReferenceTypeRef>(span, std::move(referent), false);
     }
     return referent;
 }
@@ -95,7 +162,7 @@ namespace rx::frontend{
 
 // 从 crate 入口顺序构建声明；解析树只借用，返回的 AST 独立持有自己的节点。
 std::unique_ptr<ast::Crate> ASTBuilder::build(rx::Parser::CrateContext *ctx){
-    auto result = std::make_unique<ast::Crate>();
+    auto result = makeNode<ast::Crate>(sourceSpan(ctx));
     for(auto itemCtx : ctx->item()){
         // 课程规范允许解析后丢弃整条 use，不产生空的 Item 节点。
         if (itemCtx->useDeclaration() != nullptr) {
@@ -135,7 +202,7 @@ std::unique_ptr<ast::ConstItem> ASTBuilder::buildConstItem(rx::Parser::ConstantI
     auto type = buildTypeRef(ctx->typeRef());
     auto value = buildConstValue(ctx->constValue());
 
-    return std::make_unique<ast::ConstItem>(
+    return makeNode<ast::ConstItem>(sourceSpan(ctx),
         std::move(name),
         std::move(type),
         std::move(value)
@@ -156,7 +223,7 @@ std::unique_ptr<ast::StructItem> ASTBuilder::buildStructItem(rx::Parser::StructD
         fields.push_back(buildStructField(fieldCtx));
     }
 
-    return std::make_unique<ast::StructItem>(
+    return makeNode<ast::StructItem>(sourceSpan(ctx),
         ctx->identifier()->getText(), std::move(fields), std::move(attributes)
     );
 }
@@ -164,7 +231,7 @@ std::unique_ptr<ast::StructItem> ASTBuilder::buildStructItem(rx::Parser::StructD
 // 字段声明只保存名称及类型；重名和类型合法性由后续语义分析检查。
 std::unique_ptr<ast::StructField> ASTBuilder::buildStructField(rx::Parser::StructFieldContext *ctx) {
     auto type = buildTypeRef(ctx->typeRef());
-    return std::make_unique<ast::StructField>(ctx->identifier()->getText(), std::move(type));
+    return makeNode<ast::StructField>(sourceSpan(ctx), ctx->identifier()->getText(), std::move(type));
 }
 
 // 构建 impl 的目标类型和关联项，复用函数及常量入口，不在此处绑定到结构体。
@@ -178,7 +245,7 @@ std::unique_ptr<ast::ImplItem> ASTBuilder::buildInherentImpl(rx::Parser::Inheren
             items.push_back(buildFunction(itemCtx->functionDefinition()));
         }
     }
-    return std::make_unique<ast::ImplItem>(
+    return makeNode<ast::ImplItem>(sourceSpan(ctx),
         std::move(type), std::move(items)
     );
 }
@@ -189,7 +256,7 @@ std::unique_ptr<ast::OuterAttribute> ASTBuilder::buildOuterAttribute(rx::Parser:
     for (auto *nameCtx : ctx->deriveName()) {
         names.push_back(nameCtx->getText());
     }
-    return std::make_unique<ast::DeriveAttribute>(std::move(names));
+    return makeNode<ast::DeriveAttribute>(sourceSpan(ctx), std::move(names));
 }
 
 // 将函数签名与函数体组合为声明节点，self 参数与普通参数分别保存。
@@ -221,7 +288,7 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
     auto body = buildBlock(ctx->blockExpression());
 
     // 丢弃生命周期详情，只保留是否声明形参，供后续检查 main 入口签名。
-    return std::make_unique<ast::FunctionItem>(
+    return makeNode<ast::FunctionItem>(sourceSpan(ctx),
         std::move(name),
         std::move(selfParam),
         std::move(parameters),
@@ -233,7 +300,7 @@ std::unique_ptr<ast::FunctionItem> ASTBuilder::buildFunction(rx::Parser::Functio
 
 // 按顺序构建语句，并将末尾无分号的结果表达式单独保存为 tail。
 std::unique_ptr<ast::BlockExpr> ASTBuilder::buildBlock(rx::Parser::BlockExpressionContext *ctx){
-    auto block = std::make_unique<ast::BlockExpr>();
+    auto block = makeNode<ast::BlockExpr>(sourceSpan(ctx));
 
     const auto statements = ctx->statement();
     for (std::size_t i = 0; i < statements.size(); ++i) {
@@ -268,7 +335,7 @@ std::unique_ptr<ast::LetStmt> ASTBuilder::buildLet(rx::Parser::LetStatementConte
     bool isMutable = binding->MUT() != nullptr;
     auto initializer = buildExpression(ctx->expression());
 
-    return std::make_unique<ast::LetStmt>(
+    return makeNode<ast::LetStmt>(sourceSpan(ctx),
         std::move(name), isMutable, std::move(initializer), std::move(type)
     );
 }
@@ -281,18 +348,18 @@ ast::StmtPtr ASTBuilder::buildStatement(rx::Parser::StatementContext *ctx){
 
     if(ctx->statementExpression() != nullptr){
         auto expression = buildStatementExpression(ctx->statementExpression());
-        return std::make_unique<ast::ExprStmt>(std::move(expression));
+        return makeNode<ast::ExprStmt>(sourceSpan(ctx), std::move(expression));
     }
 
     if(ctx->expressionWithBlock() != nullptr){
         // 带块表达式共用一个分派入口，在语句位置统一包装为 ExprStmt。
         auto expression = buildExpressionWithBlock(ctx->expressionWithBlock());
-        return std::make_unique<ast::ExprStmt>(std::move(expression), ctx->SEMI() != nullptr);
+        return makeNode<ast::ExprStmt>(sourceSpan(ctx), std::move(expression), ctx->SEMI() != nullptr);
     }
 
     // 其他语句也可能带分号，先处理它们，再识别单独的空语句。
     if (ctx->SEMI() != nullptr) {
-        return std::make_unique<ast::EmptyStmt>();
+        return makeNode<ast::EmptyStmt>(sourceSpan(ctx));
     }
 
     throw std::runtime_error("this statement form is not supported yet");
@@ -315,7 +382,7 @@ ast::ExprPtr ASTBuilder::buildLiteral(rx::Parser::LiteralExpressionContext *ctx)
     if(ctx->TRUE() != nullptr || ctx->FALSE() != nullptr){
         bool flag = ctx->TRUE() != nullptr;
 
-        return std::make_unique<ast::BooleanLiteralExpr>(flag);
+        return makeNode<ast::BooleanLiteralExpr>(sourceSpan(ctx), flag);
     }
 
     auto integer = ctx->INTEGER_LITERAL();
@@ -334,7 +401,7 @@ ast::ExprPtr ASTBuilder::buildArray(rx::Parser::ArrayExpressionContext *ctx){
         // 元素走完整表达式入口，嵌套数组会再次进入 buildArray。
         auto value = buildExpression(ctx->expression(0));
         auto count = buildConstValue(ctx->constValue());
-        return std::make_unique<ast::ArrayRepeatExpr>(
+        return makeNode<ast::ArrayRepeatExpr>(sourceSpan(ctx),
             std::move(value),
             std::move(count)
         );
@@ -346,7 +413,7 @@ ast::ExprPtr ASTBuilder::buildArray(rx::Parser::ArrayExpressionContext *ctx){
         elements.push_back(buildExpression(elementCtx));
     }
 
-    return std::make_unique<ast::ArrayExpr>(
+    return makeNode<ast::ArrayExpr>(sourceSpan(ctx),
         std::move(elements)
     );
 }
@@ -355,7 +422,7 @@ ast::ExprPtr ASTBuilder::buildConstValue(rx::Parser::ConstValueContext *ctx){
     if (ctx->MINUS() != nullptr) {
         auto operand = buildMagnitude(ctx->magnitude());
 
-        return std::make_unique<ast::UnaryExpr>(
+        return makeNode<ast::UnaryExpr>(sourceSpan(ctx),
             "-",
             std::move(operand)
         );
@@ -369,10 +436,10 @@ ast::ExprPtr ASTBuilder::buildConstValue(rx::Parser::ConstValueContext *ctx){
         return buildIntegerLiteral(ctx->INTEGER_LITERAL());
     }
     if(ctx->TRUE() != nullptr || ctx->FALSE() != nullptr){
-        return std::make_unique<ast::BooleanLiteralExpr>(ctx->TRUE() != nullptr);
+        return makeNode<ast::BooleanLiteralExpr>(sourceSpan(ctx), ctx->TRUE() != nullptr);
     }
     if(ctx->LPAREN() != nullptr){
-        return buildConstValue(ctx->constValue());
+        return withSourceSpan(buildConstValue(ctx->constValue()), sourceSpan(ctx));
     }
     throw std::runtime_error{"this constant value is not supported yet"};
 }
@@ -388,7 +455,7 @@ ast::ExprPtr ASTBuilder::buildMagnitude(rx::Parser::MagnitudeContext *ctx){
     }
 
     if(ctx->LPAREN() != nullptr){
-        return buildMagnitude(ctx->magnitude());
+        return withSourceSpan(buildMagnitude(ctx->magnitude()), sourceSpan(ctx));
     }
 
     throw std::runtime_error{"this magnitude is not supported yet"};
@@ -426,7 +493,9 @@ ast::ExprPtr ASTBuilder::buildCast(rx::Parser::CastExpressionContext *ctx) {
 // x as A as B 构建为 Cast(Cast(x, A), B)，每次将旧结果交给新节点持有。
 ast::ExprPtr ASTBuilder::buildCastChain(ast::ExprPtr value, const std::vector<rx::Parser::TypeRefContext*> &types) {
     for (auto *type : types) {
-        value = std::make_unique<ast::CastExpr>(std::move(value), buildTypeRef(type));
+        auto targetType = buildTypeRef(type);
+        auto span = ast::SourceSpan::covering(value->sourceSpan(), targetType->sourceSpan());
+        value = makeNode<ast::CastExpr>(span, std::move(value), std::move(targetType));
     }
     return value;
 }
@@ -450,16 +519,17 @@ ast::ExprPtr ASTBuilder::buildPostfix(rx::Parser::PostfixExpressionContext *ctx)
 }
 
 ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::PostfixSuffixContext *ctx){
+    auto span = ast::SourceSpan::covering(base->sourceSpan(), sourceSpan(ctx));
     if (auto *call = ctx->callArguments()) {
         auto arguments = buildCallArguments(call);
         // base 是此前完整的表达式；是否可调用及参数类型留给语义分析检查。
-        return std::make_unique<ast::CallExpr>(std::move(base), std::move(arguments));
+        return makeNode<ast::CallExpr>(span, std::move(base), std::move(arguments));
     }
 
     if(ctx->LBRACKET() != nullptr){
         // base 是前一个表达式的结果，expression 是 [] 内的下标。
         auto index = buildExpression(ctx->expression());
-        return std::make_unique<ast::IndexExpr>(
+        return makeNode<ast::IndexExpr>(span,
             std::move(base),
             std::move(index)
         );
@@ -473,15 +543,16 @@ ast::ExprPtr ASTBuilder::buildPostfixSuffix(ast::ExprPtr base, rx::Parser::Postf
 }
 
 ast::ExprPtr ASTBuilder::buildDotSuffix(ast::ExprPtr base, rx::Parser::DotSuffixContext *ctx) {
+    auto span = ast::SourceSpan::covering(base->sourceSpan(), sourceSpan(ctx));
     if (auto *call = ctx->callArguments()) {
         auto method = buildPathSegment(ctx->pathExprSegment());
         auto arguments = buildCallArguments(call);
         // receiver 单独保存，自动借用、解引用和方法查找留给语义分析。
-        return std::make_unique<ast::MethodCallExpr>(
+        return makeNode<ast::MethodCallExpr>(span,
             std::move(base), std::move(method), std::move(arguments)
         );
     }
-    return std::make_unique<ast::FieldExpr>(
+    return makeNode<ast::FieldExpr>(span,
         std::move(base), ctx->identifier()->getText()
     );
 }
@@ -524,13 +595,13 @@ std::unique_ptr<ast::PathExpr> ASTBuilder::buildPath(rx::Parser::PathInExpressio
         segments.push_back(buildPathSegment(segmentCtx));
     }
 
-    return std::make_unique<ast::PathExpr>(
+    return makeNode<ast::PathExpr>(sourceSpan(ctx),
         std::move(segments)
     );
 }
 
 std::unique_ptr<ast::StructExpr> ASTBuilder::buildStructExpr(rx::Parser::PathInExpressionContext *pathCtx,
-                                                         rx::Parser::StructExprFieldsContext *fieldsCtx) {
+                                                         rx::Parser::StructExprFieldsContext *fieldsCtx, ast::SourceSpan span) {
     auto path = buildPath(pathCtx);
     std::vector<std::unique_ptr<ast::StructExprField>> fields;
     // S {} 的字段上下文为空，但仍然是构造表达式，不能退化为路径。
@@ -539,19 +610,19 @@ std::unique_ptr<ast::StructExpr> ASTBuilder::buildStructExpr(rx::Parser::PathInE
             fields.push_back(buildStructExprField(fieldCtx));
         }
     }
-    return std::make_unique<ast::StructExpr>(std::move(path), std::move(fields));
+    return makeNode<ast::StructExpr>(span, std::move(path), std::move(fields));
 }
 
 // 构造字段保存 field: value 的值表达式，不在此处匹配字段声明或检查类型。
 std::unique_ptr<ast::StructExprField> ASTBuilder::buildStructExprField(rx::Parser::StructExprFieldContext *ctx) {
     auto value = buildExpression(ctx->expression());
-    return std::make_unique<ast::StructExprField>(ctx->identifier()->getText(), std::move(value));
+    return makeNode<ast::StructExprField>(sourceSpan(ctx), ctx->identifier()->getText(), std::move(value));
 }
 
 std::unique_ptr<ast::PathSegment> ASTBuilder::buildPathSegment(rx::Parser::PathExprSegmentContext *ctx) {
     auto genericArgs = buildGenericArgs(ctx->genericArgs());
     // 保留普通标识符、self 和 Self；其使用上下文由语义分析检查。
-    return std::make_unique<ast::PathSegment>(
+    return makeNode<ast::PathSegment>(sourceSpan(ctx),
         ctx->pathIdentSegment()->getText(), std::move(genericArgs)
     );
 }
@@ -576,7 +647,7 @@ std::optional<ast::GenericArgs> ASTBuilder::buildGenericArgs(rx::Parser::Generic
 
 // 类型位置的路径段与值位置共用 AST 结构，仅解析树入口不同。
 std::unique_ptr<ast::PathSegment> ASTBuilder::buildTypePathSegment(rx::Parser::TypePathSegmentContext *ctx) {
-    return std::make_unique<ast::PathSegment>(
+    return makeNode<ast::PathSegment>(sourceSpan(ctx),
         ctx->pathIdentSegment()->getText(), buildGenericArgs(ctx->genericArgs())
     );
 }
@@ -587,7 +658,7 @@ std::unique_ptr<ast::TypePathRef> ASTBuilder::buildTypePath(rx::Parser::TypePath
     for (auto *segmentCtx : ctx->typePathSegment()) {
         segments.push_back(buildTypePathSegment(segmentCtx));
     }
-    return std::make_unique<ast::TypePathRef>(std::move(segments));
+    return makeNode<ast::TypePathRef>(sourceSpan(ctx), std::move(segments));
 }
 
 // 语句起始位置的限制只沿左侧传播，赋值右侧重新进入普通 expression。
@@ -668,7 +739,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
 
     if (ctx->pathInExpression() != nullptr) {
         if (ctx->LBRACE() != nullptr) {
-            return buildStructExpr(ctx->pathInExpression(), ctx->structExprFields());
+            return buildStructExpr(ctx->pathInExpression(), ctx->structExprFields(), sourceSpan(ctx));
         }
 
         return buildPath(ctx->pathInExpression());
@@ -679,7 +750,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
 
     // 语句入口也会走到这里，由 buildStatement 在外层包装 ExprStmt。
     if(ctx->CONTINUE() != nullptr){
-        return std::make_unique<ast::ContinueExpr>();
+        return makeNode<ast::ContinueExpr>(sourceSpan(ctx));
     }
 
     if(ctx->BREAK() != nullptr){
@@ -689,7 +760,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
             value = buildExpression(ctx->expression());
         }
 
-        return std::make_unique<ast::BreakExpr>(
+        return makeNode<ast::BreakExpr>(sourceSpan(ctx),
             std::move(value)
         );
     }
@@ -704,7 +775,7 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
             );
         }
 
-        return std::make_unique<ast::ReturnExpr>(
+        return makeNode<ast::ReturnExpr>(sourceSpan(ctx),
             std::move(value)
         ); 
     }
@@ -714,10 +785,10 @@ ast::ExprPtr ASTBuilder::buildNonBlockPrimary(rx::Parser::NonBlockPrimaryContext
 
         // () 是单元值，(expr) 只用于分组，优先级已由解析树体现。
         if (inner == nullptr) {
-            return std::make_unique<ast::UnitExpr>();
+            return makeNode<ast::UnitExpr>(sourceSpan(ctx));
         }
 
-        return buildExpression(inner);
+        return withSourceSpan(buildExpression(inner), sourceSpan(ctx));
     }
 
     throw std::runtime_error(
@@ -842,7 +913,8 @@ ast::ExprPtr ASTBuilder::buildShiftChain(antlr4::ParserRuleContext *ctx) {
     auto result = buildShiftOperand(ctx->children[0]);
     for (std::size_t i = 1; i < ctx->children.size(); i += 2) {
         auto right = buildShiftOperand(ctx->children[i + 1]);
-        result = std::make_unique<ast::BinaryExpr>(
+        auto span = ast::SourceSpan::covering(result->sourceSpan(), right->sourceSpan());
+        result = makeNode<ast::BinaryExpr>(span,
             ctx->children[i]->getText(), std::move(result), std::move(right)
         );
     }
@@ -964,7 +1036,7 @@ ast::ExprPtr ASTBuilder::buildClosedCast(rx::Parser::ClosedCastExpressionContext
     if (ctx->unaryExpression() != nullptr) {
         return buildUnary(ctx->unaryExpression());
     }
-    return std::make_unique<ast::CastExpr>(
+    return makeNode<ast::CastExpr>(sourceSpan(ctx),
         buildCast(ctx->castExpression()),
         buildClosedCastType(ctx->closedCastType())
     );
@@ -1162,7 +1234,7 @@ ast::ExprPtr ASTBuilder::buildStatementClosedCast(rx::Parser::StatementClosedCas
     if (ctx->statementUnaryExpression() != nullptr) {
         return buildStatementUnary(ctx->statementUnaryExpression());
     }
-    return std::make_unique<ast::CastExpr>(
+    return makeNode<ast::CastExpr>(sourceSpan(ctx),
         buildStatementCast(ctx->statementCastExpression()),
         buildClosedCastType(ctx->closedCastType())
     );
@@ -1384,7 +1456,7 @@ ast::ExprPtr ASTBuilder::buildConditionClosedCast(rx::Parser::ConditionClosedCas
     if (ctx->conditionUnaryExpression() != nullptr) {
         return buildConditionUnary(ctx->conditionUnaryExpression());
     }
-    return std::make_unique<ast::CastExpr>(
+    return makeNode<ast::CastExpr>(sourceSpan(ctx),
         buildConditionCast(ctx->conditionCastExpression()),
         buildClosedCastType(ctx->closedCastType())
     );
@@ -1419,10 +1491,10 @@ ast::ExprPtr ASTBuilder::buildConditionPrimary(rx::Parser::ConditionPrimaryConte
 ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::ConditionPrimaryWithoutBareBlockContext *ctx){
     // 条件位置也有独立的 while 和 loop 语法分支，AST 构建阶段统一处理。
     if(ctx->WHILE() != nullptr){
-        return buildWhile(ctx->conditionExpression(), ctx->blockExpression());
+        return buildWhile(ctx->conditionExpression(), ctx->blockExpression(), sourceSpan(ctx));
     }
     if(ctx->LOOP() != nullptr){
-        return buildLoop(ctx->blockExpression());
+        return buildLoop(ctx->blockExpression(), sourceSpan(ctx));
     }
     if(ctx->literalExpression() != nullptr){
         return buildLiteral(ctx->literalExpression());
@@ -1435,15 +1507,15 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
     }
     if(ctx->LPAREN() != nullptr){
         if(ctx->expression() == nullptr){
-            return std::make_unique<ast::UnitExpr>();
+            return makeNode<ast::UnitExpr>(sourceSpan(ctx));
         }
-        return buildExpression(ctx->expression());
+        return withSourceSpan(buildExpression(ctx->expression()), sourceSpan(ctx));
     }
     if(ctx->ifExpression() != nullptr){
         return buildIf(ctx->ifExpression());
     }
     if(ctx->CONTINUE() != nullptr){
-        return std::make_unique<ast::ContinueExpr>();
+        return makeNode<ast::ContinueExpr>(sourceSpan(ctx));
     }
     if(ctx->BREAK() != nullptr){
         ast::ExprPtr value;
@@ -1452,7 +1524,7 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
             value = buildConditionBreakExpression(ctx->conditionBreakExpression());
         }
 
-        return std::make_unique<ast::BreakExpr>(
+        return makeNode<ast::BreakExpr>(sourceSpan(ctx),
             std::move(value)
         );
     }
@@ -1463,7 +1535,7 @@ ast::ExprPtr ASTBuilder::buildConditionPrimaryWithoutBareBlock(rx::Parser::Condi
             value = buildConditionExpression(ctx->conditionExpression());
         }
         
-        return std::make_unique<ast::ReturnExpr>(
+        return makeNode<ast::ReturnExpr>(sourceSpan(ctx),
             std::move(value)
         ); 
     }
@@ -1702,7 +1774,7 @@ ast::ExprPtr ASTBuilder::buildConditionBreakClosedCast(rx::Parser::ConditionBrea
     if (ctx->conditionBreakUnaryExpression() != nullptr) {
         return buildConditionBreakUnary(ctx->conditionBreakUnaryExpression());
     }
-    return std::make_unique<ast::CastExpr>(
+    return makeNode<ast::CastExpr>(sourceSpan(ctx),
         buildConditionBreakCast(ctx->conditionBreakCastExpression()),
         buildClosedCastType(ctx->closedCastType())
     );
@@ -1738,30 +1810,30 @@ ast::ExprPtr ASTBuilder::buildIf(rx::Parser::IfExpressionContext *ctx){
         elseBranch = buildBlock(ctx->blockExpression(1));
     }
 
-    return std::make_unique<ast::IfExpr>(
+    return makeNode<ast::IfExpr>(sourceSpan(ctx),
         std::move(condition),
         std::move(thenBranch),
         std::move(elseBranch)
     );
 }
 
-ast::ExprPtr ASTBuilder::buildLoop(rx::Parser::BlockExpressionContext *ctx){
+ast::ExprPtr ASTBuilder::buildLoop(rx::Parser::BlockExpressionContext *ctx, ast::SourceSpan span){
     // 复用块构建，保留 break 的可选值、continue 和嵌套循环等子节点。
     auto block = buildBlock(ctx);
 
-    return std::make_unique<ast::LoopExpr>(
+    return makeNode<ast::LoopExpr>(span,
         std::move(block)
     );
 }
 
-ast::ExprPtr ASTBuilder::buildWhile(rx::Parser::ConditionExpressionContext *conditionCtx, rx::Parser::BlockExpressionContext *blockCtx){
+ast::ExprPtr ASTBuilder::buildWhile(rx::Parser::ConditionExpressionContext *conditionCtx, rx::Parser::BlockExpressionContext *blockCtx, ast::SourceSpan span){
     // 与 if 共用条件表达式入口，保留比较、逻辑运算等表达式的优先级。
     auto condition = buildConditionExpression(conditionCtx);
     // 递归构建循环体中的语句和尾表达式，也支持嵌套 while。
     auto block = buildBlock(blockCtx);
 
     // 将两个子节点的所有权交给 WhileExpr。
-    return std::make_unique<ast::WhileExpr>(
+    return makeNode<ast::WhileExpr>(span,
         std::move(condition),
         std::move(block)
     );
@@ -1771,10 +1843,10 @@ ast::ExprPtr ASTBuilder::buildExpressionWithBlock(rx::Parser::ExpressionWithBloc
     //判断 WHILE、LOOP 必须放在普通块判断前面
     // 循环分支也包含 blockExpression，先判断普通块会丢失循环信息。
     if(ctx->WHILE() != nullptr){
-        return buildWhile(ctx->conditionExpression(), ctx->blockExpression());
+        return buildWhile(ctx->conditionExpression(), ctx->blockExpression(), sourceSpan(ctx));
     }
     if(ctx->LOOP() != nullptr){
-        return buildLoop(ctx->blockExpression());
+        return buildLoop(ctx->blockExpression(), sourceSpan(ctx));
     }
     if(ctx->ifExpression() != nullptr){
         return buildIf(ctx->ifExpression());
@@ -1793,7 +1865,7 @@ std::unique_ptr<ast::FunctionParam> ASTBuilder::buildNamedParam(rx::Parser::Func
     bool isMutable = binding->MUT() != nullptr;
     auto type = buildTypeRef(ctx->typeRef());
 
-    return std::make_unique<ast::NamedFunctionParam>(
+    return makeNode<ast::NamedFunctionParam>(sourceSpan(ctx),
         std::move(name),
         isMutable,
         std::move(type)
@@ -1816,9 +1888,9 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContex
     if (ctx->LPAREN() != nullptr) {
         // (T) 只分组，不增加类型节点；没有内层类型时才是单元类型 ()。
         if (ctx->typeRef() != nullptr) {
-            return buildTypeRef(ctx->typeRef());
+            return withSourceSpan(buildTypeRef(ctx->typeRef()), sourceSpan(ctx));
         }
-        return std::make_unique<ast::UnitTypeRef>();
+        return makeNode<ast::UnitTypeRef>(sourceSpan(ctx));
     }
 
     throw std::runtime_error("this type form is not supported yet");
@@ -1827,8 +1899,8 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildTypeRef(rx::Parser::TypeRefContex
 std::unique_ptr<ast::TypeRef> ASTBuilder::buildClosedCastType(rx::Parser::ClosedCastTypeContext *ctx) {
     // closedCastType 约束类型的结尾，避免把后续 < 或 << 读成泛型参数。
     if (ctx->LPAREN() != nullptr) {
-        return ctx->typeRef() != nullptr ? buildTypeRef(ctx->typeRef())
-                                        : std::make_unique<ast::UnitTypeRef>();
+        return ctx->typeRef() != nullptr ? withSourceSpan(buildTypeRef(ctx->typeRef()), sourceSpan(ctx))
+                                        : makeNode<ast::UnitTypeRef>(sourceSpan(ctx));
     }
     if (ctx->arrayType() != nullptr) {
         return buildArrayType(ctx->arrayType());
@@ -1841,10 +1913,11 @@ std::unique_ptr<ast::TypeRef> ASTBuilder::buildClosedCastType(rx::Parser::Closed
     for (auto *segmentCtx : ctx->typePathSegment()) {
         segments.push_back(buildTypePathSegment(segmentCtx));
     }
-    segments.push_back(std::make_unique<ast::PathSegment>(
+    auto segmentSpan = ast::SourceSpan::covering(sourceSpan(ctx->pathIdentSegment()), sourceSpan(ctx->genericArgs()));
+    segments.push_back(makeNode<ast::PathSegment>(segmentSpan,
         ctx->pathIdentSegment()->getText(), buildGenericArgs(ctx->genericArgs())
     ));
-    return std::make_unique<ast::TypePathRef>(std::move(segments));
+    return makeNode<ast::TypePathRef>(sourceSpan(ctx), std::move(segments));
 }
 
 std::unique_ptr<ast::ArrayTypeRef> ASTBuilder::buildArrayType(rx::Parser::ArrayTypeContext *ctx) {
@@ -1852,7 +1925,7 @@ std::unique_ptr<ast::ArrayTypeRef> ASTBuilder::buildArrayType(rx::Parser::ArrayT
     auto elementType = buildTypeRef(ctx->typeRef());
     auto count = buildConstValue(ctx->constValue());
 
-    return std::make_unique<ast::ArrayTypeRef>(std::move(elementType), std::move(count));
+    return makeNode<ast::ArrayTypeRef>(sourceSpan(ctx), std::move(elementType), std::move(count));
 }
 
 // 两个标记区分 self、mut self、&self、&mut self；生命周期注解不进入 AST。
@@ -1860,7 +1933,7 @@ std::unique_ptr<ast::SelfFunctionParam> ASTBuilder::buildSelfParam(rx::Parser::S
     bool isReference = ctx->AMP() != nullptr;
     bool isMutable = ctx->MUT() != nullptr;
 
-    return std::make_unique<ast::SelfFunctionParam>(isReference, isMutable);
+    return makeNode<ast::SelfFunctionParam>(sourceSpan(ctx), isReference, isMutable);
 }
 
 }

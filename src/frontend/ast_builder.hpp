@@ -68,7 +68,7 @@ class ASTBuilder final : public ParserBaseVisitor{
     std::unique_ptr<ast::PathExpr> buildPath(rx::Parser::PathInExpressionContext *ctx);
 
     std::unique_ptr<ast::StructExpr> buildStructExpr(rx::Parser::PathInExpressionContext *pathCtx,
-                                                 rx::Parser::StructExprFieldsContext *fieldsCtx);
+                                                 rx::Parser::StructExprFieldsContext *fieldsCtx, ast::SourceSpan span);
 
     std::unique_ptr<ast::StructExprField> buildStructExprField(rx::Parser::StructExprFieldContext *ctx);
 
@@ -249,10 +249,10 @@ class ASTBuilder final : public ParserBaseVisitor{
     ast::ExprPtr buildIf(rx::Parser::IfExpressionContext *ctx);
 
     // loop 在两条语法规则中出现，共用循环体的构建逻辑。
-    ast::ExprPtr buildLoop(rx::Parser::BlockExpressionContext *ctx);
+    ast::ExprPtr buildLoop(rx::Parser::BlockExpressionContext *ctx, ast::SourceSpan span);
 
     // while 在两条语法规则中出现，共用条件和循环体的构建逻辑。
-    ast::ExprPtr buildWhile(rx::Parser::ConditionExpressionContext *conditionCtx, rx::Parser::BlockExpressionContext *blockCtx);
+    ast::ExprPtr buildWhile(rx::Parser::ConditionExpressionContext *conditionCtx, rx::Parser::BlockExpressionContext *blockCtx, ast::SourceSpan span);
 
     ast::ExprPtr buildExpressionWithBlock(rx::Parser::ExpressionWithBlockContext *ctx);
 
