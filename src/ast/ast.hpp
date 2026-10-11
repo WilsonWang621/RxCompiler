@@ -1,5 +1,8 @@
 #pragma once
 
+#include <node_id.hpp>
+#include "source_span.hpp"
+
 #include<vector>
 #include<memory>
 #include<string>
@@ -9,6 +12,14 @@ namespace rx::ast{
 
 // 所有节点共用虚析构和 dump 接口，允许通过基类指针持有和输出具体节点。
 struct ASTNode{
+private:
+    NodeId id_ = allocateNodeId();
+    SourceSpan sourceSpan_;
+
+public:
+    NodeId id() const { return id_; }
+    const SourceSpan &sourceSpan() const { return sourceSpan_; }
+    void setSourceSpan(SourceSpan sourceSpan){ sourceSpan_ = sourceSpan; }
     virtual ~ASTNode() = default;
     virtual void dump(std::ostream &out, int indent = 0) const = 0;
 };
