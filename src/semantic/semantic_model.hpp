@@ -1,11 +1,10 @@
 #pragma once
 
 #include <ast.hpp>
-#include <symbol.hpp>
+#include "symbol.hpp"
 
 #include <unordered_map>
 
-struct SymbolId { uint32_t value; };
 struct TypeId   { uint32_t value; };
 
 
