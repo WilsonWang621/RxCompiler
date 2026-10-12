@@ -1,0 +1,32 @@
+# Rust
+/target
+
+# REIMU build configuration
+/.xmake/
+
+# ANTLR
+.antlr
+
+# Python test runner
+__pycache__/
+
+# Keep the official testcase submodule in version control. Ignore locally
+# written tests unless they are explicitly promoted into the official suite.
+/tests/*
+!/tests/official/
+
+# Local files
+dev/
+*.local.*
+
+tmp/
+PLAN.md
+
+example.rx
+build/
+
+DEVELOPMENT-HISTORY.md
+
+docs/
+
+AGENTS.md

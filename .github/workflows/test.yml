@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Build compiler
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake curl python3
+
+      - name: Build compiler
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p target/ci
+          make build 2>&1 | tee target/ci/build.log
+
+      - name: Write CI summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## Rx compiler CI record'
+            echo
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Workflow run: [${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+            echo "- Compiler build: \`${{ job.status }}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload CI records
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-record-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/ci/
+            target/build/CMakeCache.txt
+            target/build/CMakeFiles/CMakeOutput.log
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Upload compiler
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compiler-${{ github.sha }}
+          path: target/compiler
+          if-no-files-found: error
+          retention-days: 30

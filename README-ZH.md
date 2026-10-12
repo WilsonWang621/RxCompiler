@@ -35,7 +35,7 @@ tests/              本地测试与用例，不放在 src/ 中
 target/             编译产物和测试日志
 ```
 
-`tests/` 当前被 Git 忽略，以上测试子目录描述的是本地布局，不保证克隆后存在。
+`tests/official/` 是随仓库配置的官方测试子模块；`tests/ast/`、`tests/custom/`、`tests/semantic/` 等本地自写测试默认由 Git 忽略。
 
 ## 构建与运行
 
@@ -117,15 +117,15 @@ make test COMPILE_TIMEOUT=60
 
 测试日志保存在 `target/tests/run-*`。`FILTER` 使用冒号连接目录层级，使用逗号分隔多个选择；留空表示不筛选。`VERBOSE=true` 显示每个用例。默认编译超时为 30 秒，运行超时为 10 秒，可通过 `COMPILE_TIMEOUT`、`RUN_TIMEOUT` 覆盖。`PYTHON` 默认 `python3`。
 
-测试目录当前被 `.gitignore` 忽略，本地已有测试不会随普通克隆带入；运行前需准备官方或自定义用例。每个用例目录通过 `manifest.json` 声明源文件、阶段、预期编译结果及可选输入输出，格式见本地的 `tests/official/manifest.schema.json`。官方 `lex`、`parse` 条目仍由运行器跳过。
+官方测试通过 `tests/official` 子模块提供；克隆后需执行 `git submodule update --init --recursive`。每个用例目录通过 `manifest.json` 声明源文件、阶段、预期编译结果及可选输入输出，格式见 `tests/official/manifest.schema.json`。官方 `lex`、`parse` 条目仍由运行器跳过。
 
-本地 `tests/ast/` 已有 AST 回归套件时，可运行：
+本地 AST 回归套件放在被忽略的 `tests/ast/` 中，可运行：
 
 ```sh
 make test-ast
 ```
 
-该命令先构建编译器，再运行 `test_*builder.py` 套件并比对 AST 输出；这些本地测试同样尚未纳入 Git。目录不存在时会明确报错。
+该命令先构建编译器，再运行 `test_*builder.py` 套件并比对 AST 输出。目录不存在时会明确报错。
 
 作用域单元测试位于 `tests/semantic/scope_test.cpp`，不由 `make test` 或 `make test-ast` 自动运行。当前测试仍引用旧字段名 `resolved_symbols`，与模型中的 `resolvedSymbols` 不一致，因此暂时无法编译；同步测试后可独立运行：
 
@@ -152,6 +152,10 @@ xmake -y -P vendor/REIMU
 
 REIMU 从全局 `main` 符号开始执行，`RUN` 的 `{stdout}`、`{profile}` 分别保存程序输出和周期统计。公共运行时汇编应由 `BUILD` 写入 `{runtime}`，导出函数遵循 ILP32 调用约定。收集周期统计时保留 `-p {profile}`，不要添加 `--silent`。
 
-## CI
+## CI/CD
 
-前端与 AST 开发期间，测试工作流已改名为 `.github/workflows/test.yml.disabled`，因此不会在提交或 PR 时自动运行。工作流中的依赖与命令已切换为 C++ 构建和 semantic 测试。语义分析具备稳定回归结果、且 CI 中已准备好测试用例后，可改回 `test.yml`；启用 IR 或后端测试时，再补充 Clang、xmake 和 REIMU 构建步骤。
+GitHub Actions 工作流 `.github/workflows/test.yml` 会在每次 push、Pull Request 以及手动触发时签出官方测试子模块并构建 C++ 编译器。每次运行都会在 GitHub Actions Summary 中记录提交、运行链接和最终状态，并保留构建日志 90 天；成功构建的编译器产物保留 30 天，可作为 Code Review 的 CI/CD 记录。
+
+提交 Code Review 时应附上对应的 GitHub Actions Run 链接，并确保 `Build compiler` 检查通过。建议在 GitHub 分支保护规则中将该检查设为合并前必需。
+
+当前 CI 只强制检查编译器构建。语义分析形成稳定回归结果后，应增加官方 `make test STAGE=semantic`；启用 IR 或后端测试时，再补充 Clang、xmake 和 REIMU 构建步骤。

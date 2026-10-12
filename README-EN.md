@@ -35,7 +35,7 @@ tests/              Local tests and fixtures, kept outside src/
 target/             Build artifacts and test logs
 ```
 
-`tests/` is currently ignored by Git. The test subdirectories above describe the local layout and may be absent after cloning.
+`tests/official/` is the official testcase submodule configured with the repository. Locally written tests under `tests/ast/`, `tests/custom/`, and `tests/semantic/` are ignored by Git by default.
 
 ## Building and running
 
@@ -117,9 +117,9 @@ make test COMPILE_TIMEOUT=60
 
 Logs are saved under `target/tests/run-*`. `FILTER` uses colons between directory levels and commas between selections; an empty value selects all directories. `VERBOSE=true` reports individual cases. Compilation and execution timeouts default to 30 and 10 seconds; override them with `COMPILE_TIMEOUT` and `RUN_TIMEOUT`. `PYTHON` defaults to `python3`.
 
-The test directory is currently ignored by `.gitignore`, so local tests are not included in an ordinary clone. Supply official or custom fixtures before running tests. Each fixture directory uses `manifest.json` to declare sources, stages, expected compilation results and optional input/output pairs; see the local `tests/official/manifest.schema.json` for the format. Official `lex` and `parse` entries are still skipped by the runner.
+Official tests are provided by the `tests/official` submodule; run `git submodule update --init --recursive` after cloning. Each fixture directory uses `manifest.json` to declare sources, stages, expected compilation results and optional input/output pairs; see `tests/official/manifest.schema.json` for the format. Official `lex` and `parse` entries are still skipped by the runner.
 
-When the local AST regression suites are available in `tests/ast/`, run:
+Local AST regression suites can be placed in the ignored `tests/ast/` directory and run with:
 
 ```sh
 make test-ast
@@ -152,6 +152,10 @@ Rebuild after updating REIMU. IR tests additionally require Clang 22, with `CLAN
 
 REIMU starts at the global `main` symbol. The `{stdout}` and `{profile}` placeholders in `RUN` save program output and cycle statistics. Write shared runtime assembly to `{runtime}` during `BUILD`; exported functions must follow the ILP32 calling convention. Keep `-p {profile}` and avoid `--silent` when collecting cycles.
 
-## CI
+## CI/CD
 
-During frontend and AST development, the test workflow is named `.github/workflows/test.yml.disabled`, so pushes and pull requests do not trigger it. Its dependencies and command now target the C++ build and semantic tests. Rename it back to `test.yml` once semantic regression results are stable and test fixtures are available in CI. Add Clang, xmake and REIMU build steps when enabling IR or backend tests.
+The GitHub Actions workflow at `.github/workflows/test.yml` checks out the official testcase submodule and builds the C++ compiler on every push, pull request, and manual invocation. Every run records its commit, run link, and final status in the GitHub Actions summary, retains build logs for 90 days, and retains the successfully built compiler for 30 days as a CI/CD record for code review.
+
+Include the corresponding GitHub Actions run link with each code review and ensure that `Build compiler` passes. Configure that check as required in the GitHub branch protection rules.
+
+CI currently requires only a successful compiler build. Once semantic analysis has stable regression results, add the official `make test STAGE=semantic` run. Add Clang, xmake, and REIMU setup when enabling IR or backend tests.
