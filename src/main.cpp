@@ -9,6 +9,7 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "ast_builder.hpp"
+#include "semantic_checker.hpp"
 
 namespace {
 
@@ -124,12 +125,30 @@ int run(const Options &options) {
   }
 
   if (options.stage == "ast" || options.stage == "semantic") {
-    // The semantic-analysis passes will be invoked here once implemented.
     rx::frontend::ASTBuilder builder;
 
     auto astRoot = builder.build(tree);
 
     astRoot->dump(std::cout);
+
+    if (options.stage == "semantic") {
+      SemanticChecker checker;
+      auto model = checker.check(*astRoot);
+
+      for (const auto &diagnosis : model.diagnostics) {
+        std::cerr << options.source;
+        if (diagnosis.span.begin.valid()) {
+          std::cerr << ':' << diagnosis.span.begin.line
+                    << ':' << diagnosis.span.begin.column;
+        }
+        std::cerr << ": error: " << diagnosis.message << '\n';
+      }
+
+      if (!model.diagnostics.empty()) {
+        return 1;
+      }
+    }
+
     return 0;
   }
 

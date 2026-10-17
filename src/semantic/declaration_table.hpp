@@ -41,7 +41,7 @@ struct StructDeclarationInfo{
 
 struct DeclarationTable{
     // 顶层函数和常量共享值命名空间，结构体位于类型命名空间。
-    // 分开保存可避免未来增加局部作用域时把两类查找混在一起。
+    // 分开保存避免未来增加局部作用域时把两类查找混在一起。
     std::unordered_map<std::string, SymbolId> globalValues;
     std::unordered_map<std::string, SymbolId> globalTypes;
 

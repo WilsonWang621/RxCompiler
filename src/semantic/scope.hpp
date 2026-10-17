@@ -28,9 +28,11 @@ private:
     using Bindings = std::unordered_map<std::string, std::vector<Binding>>;
 
     // 每个名字独立维护绑定栈，栈顶就是当前可见的符号。
+    //名字 -> 这个名字从外到内的所有绑定
     Bindings values_;
     Bindings types_;
     // 每一层只记录自己引入的绑定；同层遮蔽也逐次记录。
+    // 作用域深度 -> 这一层引入了哪些绑定
     std::vector<std::vector<UndoEntry>> scopes_;
 
     static std::optional<SymbolId> lookup(const Bindings &bindings, const std::string &name){
@@ -48,14 +50,18 @@ private:
     }
 
     bool declare(Bindings &bindings, Namespace nameSpace, const std::string &name, SymbolId symbol, bool allowShadowing){
+        //拒绝非法输入
         if(name.empty() || symbol.value == 0) return false;
+
+        //检查同层重名   allowShadowing : allow same-scope shadowing/rebinding
         if(!allowShadowing && lookupCurrent(bindings, name).has_value()){
             return false;
         }
 
+        //记录撤销日志 退出作用域时就根据这些记录撤销绑定
         scopes_.back().push_back({nameSpace, name});
         try{
-            bindings[name].push_back({symbol, depth()});
+            bindings[name].push_back({symbol, depth()});  //压入名字对应的绑定栈
         }catch(...){
             // 分配失败时撤销日志和可能新增的空栈，保持查找与退出操作一致。
             scopes_.back().pop_back();
@@ -79,6 +85,7 @@ public:
     // 全局层不能弹出；成功退出时返回 true。
     bool popScope(){
         if(scopes_.size() == 1) return false;
+        //逆序遍历当前层的撤销日志
         for(auto it = scopes_.back().rbegin(); it != scopes_.back().rend(); ++it){
             auto &bindings = it->nameSpace == Namespace::Value ? values_ : types_;
             auto binding = bindings.find(it->name);
@@ -117,6 +124,7 @@ public:
     }
 };
 
+// RAII 自动管理作用域
 class ScopeGuard {
     Scope *scope_;
 
