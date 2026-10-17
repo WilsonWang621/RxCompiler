@@ -3,11 +3,9 @@
 #include <ast.hpp>
 #include "declaration_table.hpp"
 #include "symbol.hpp"
+#include "type.hpp"
 
 #include <unordered_map>
-
-struct TypeId   { uint32_t value; };
-
 
 struct ExprInfo{
     bool mut;
@@ -24,6 +22,9 @@ struct Diagnosis{
 };
 
 struct SemanticModel{
+    // 拥有本次检查产生的类型；所有 TypeId 均相对于此表。
+    TypeTable types;
+
      // 第一次扫描产生的声明表
     DeclarationTable declarations;
 
