@@ -17,6 +17,9 @@ private:
     std::unordered_map<std::string, SymbolId> builtinSymbols_;
     std::optional<TypeId> currentReturnType_;
     std::optional<TypeId> currentSelfType_;
+    enum class ConstantState{ Evaluating, Complete, Failed };
+    // 表中不存在的符号尚未开始求值。
+    std::unordered_map<SymbolId, ConstantState> constantStates_;
     std::uint32_t nextSymbolId_ = 1;
 
     SymbolId allocateSymbol();
@@ -49,7 +52,7 @@ private:
     TypeId resolveTypePath(const rx::ast::TypePathRef &type, std::optional<TypeId> selfType = std::nullopt);
     std::optional<SymbolId> resolveValuePath(const rx::ast::PathExpr &path);
 
-    // 常量按依赖求值并检测循环；长度求值失败用 nullopt，不能与合法长度 0 混淆。
+    // 常量按依赖求值并检测循环；长度求值失败用 nullopt，这样不与合法长度 0 混淆
     std::optional<ConstValue> evaluateConstant(SymbolId symbol);
     std::optional<ConstValue> evaluateConstantExpr(const rx::ast::Expr &expression, TypeId expectedType);
     std::optional<std::uint32_t> evaluateArrayLength(const rx::ast::Expr &expression);

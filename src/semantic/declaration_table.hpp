@@ -30,6 +30,7 @@ struct ConstantDeclarationInfo{
     SymbolId symbol;
     const rx::ast::ConstItem *declaration = nullptr;
     TypeId type;
+    std::optional<TypeId> selfType; // 顶层常量为空；关联常量使用所属结构体的 Self。
 
     ConstantDeclarationInfo(SymbolId symbol, const rx::ast::ConstItem *declaration): symbol(symbol), declaration(declaration) {}
 };

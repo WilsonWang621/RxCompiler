@@ -13,7 +13,9 @@ struct ExprInfo{
 };
 
 struct ConstValue{
-
+    TypeId type;
+    // 整数保存 32 位补码位模式；bool 保存 0 或 1，具体含义由 type 区分。
+    std::uint32_t bits = 0;
 };
 
 struct Diagnosis{
