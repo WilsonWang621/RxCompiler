@@ -9,6 +9,8 @@ SemanticModel SemanticChecker::check(const rx::ast::Crate &crate){
     model_ = SemanticModel{};
     scope_ = Scope{};
     builtinSymbols_.clear();
+    currentReturnType_.reset();
+    currentSelfType_.reset();
     nextSymbolId_ = 1;
 
     firstScan(crate);
@@ -51,6 +53,7 @@ void SemanticChecker::firstScan(const rx::ast::Crate &crate){
 void SemanticChecker::secondScan(const rx::ast::Crate &crate){
     // 建立全局作用域，依次解析声明类型、求值常量、检查结构体和函数体，最后校验 main。
     prepareGlobalScope();
+    checkMain(crate);
 }
 
 void SemanticChecker::collectFunction(const rx::ast::FunctionItem &function){
@@ -232,13 +235,11 @@ void SemanticChecker::collectFunctionSignature(const rx::ast::FunctionItem &func
             diagnose(*receiver, "self parameter is only allowed in an impl function");
             declaration.receiverType = errorType;
         }else{
-            declaration.receiverType = receiver->isReference()
-                ? model_.types.reference(*selfType, receiver->isMutable()) : *selfType;
+            declaration.receiverType = receiver->isReference() ? model_.types.reference(*selfType, receiver->isMutable()) : *selfType;
         }
     }
 
-    declaration.returnType = function.returnType() != nullptr
-        ? resolveType(*function.returnType(), selfType) : model_.types.builtin(TypeKind::Unit);
+    declaration.returnType = function.returnType() != nullptr ? resolveType(*function.returnType(), selfType) : model_.types.builtin(TypeKind::Unit);
 }
 
 void SemanticChecker::collectConstantType(const rx::ast::ConstItem &constant, std::optional<TypeId> selfType){
@@ -288,27 +289,161 @@ void SemanticChecker::collectImplTypes(const rx::ast::ImplItem &implementation){
 }
 
 void SemanticChecker::collectFunctionBody(const rx::ast::FunctionItem &function, std::optional<TypeId> selfType){
-    // 建立函数作用域和返回类型上下文，声明参数后检查函数体及所有 return 的类型。
+    const auto symbol = model_.declaredSymbols.find(function.id());
+    if(symbol == model_.declaredSymbols.end()) return;
+    const TypeId returnType = model_.declarations.functions.at(symbol->second).returnType;
+    if(returnType.value == 0) throw std::logic_error("function signature must be collected before its body");
+
+    ScopeGuard functionScope(scope_);
+    // 与作用域一起恢复上下文，包含检查函数体期间抛出异常的情况。
+    struct ContextGuard{
+        std::optional<TypeId> &returnType;
+        std::optional<TypeId> &selfType;
+        std::optional<TypeId> previousReturnType;
+        std::optional<TypeId> previousSelfType;
+
+        ~ContextGuard(){
+            returnType = previousReturnType;
+            selfType = previousSelfType;
+        }
+    } context{currentReturnType_, currentSelfType_, currentReturnType_, currentSelfType_};
+
+    currentReturnType_ = returnType;
+    currentSelfType_ = selfType;
+    collectFunctionParameters(function, selfType);
+    // 参数和函数最外层的局部绑定使用同一层作用域；预期类型交给块检查器验证。
+    collectBlockContents(function.body(), returnType);
 }
 
 void SemanticChecker::collectFunctionParameters(const rx::ast::FunctionItem &function, std::optional<TypeId> selfType){
-    // 按源码顺序声明 self 和普通参数，为参数分配符号并加入当前函数作用域。
+    const auto symbol = model_.declaredSymbols.find(function.id());
+    if(symbol == model_.declaredSymbols.end()) return;
+    const auto &declaration = model_.declarations.functions.at(symbol->second);
+    if(declaration.parameterTypes.size() != function.parameters().size()){
+        throw std::logic_error("parameter types must be collected before parameter bindings");
+    }
+
+    if(const auto *receiver = function.selfParam()){
+        // 无 impl 上下文的 self 已在签名检查时报告，不重复诊断。
+        if(selfType.has_value()) collectSelfParameter(*receiver, *selfType);
+    }
+    for(std::size_t index = 0; index < function.parameters().size(); ++index){
+        const auto *parameter = dynamic_cast<const rx::ast::NamedFunctionParam *>(function.parameters()[index].get());
+        if(parameter == nullptr) continue;
+        const auto position = declaration.parameters.find(parameter->name());
+        // 第一遍只保留第一个同名参数，后面的重复参数不覆盖它的绑定。
+        if(position == declaration.parameters.end() || position->second != index) continue;
+
+        const TypeId type = declaration.parameterTypes[index];
+        model_.types.get(type);
+        model_.resolvedTypes.insert_or_assign(parameter->type().id(), type);
+        collectParameter(*parameter);
+    }
 }
 
 void SemanticChecker::collectParameter(const rx::ast::NamedFunctionParam &parameter){
-    // 读取已解析的参数类型，创建带可变性信息的参数符号，并检查当前层重名。
+    const TypeId type = model_.resolvedTypes.at(parameter.type().id());
+    model_.types.get(type);
+    const auto declared = model_.declaredSymbols.find(parameter.id());
+    const SymbolId symbol = declared == model_.declaredSymbols.end() ? allocateSymbol() : declared->second;
+    if(!scope_.declareValue(parameter.name(), symbol)){
+        diagnose(parameter, "duplicate parameter '" + parameter.name() + "'");
+        return;
+    }
+
+    model_.symbols.insert_or_assign(symbol, SymbolInfo{parameter.name(), SymbolKind::Parameter,parameter.id(), parameter.sourceSpan(), parameter.isMutable()});
+    model_.declaredSymbols.insert_or_assign(parameter.id(), symbol);
+    model_.symbolTypes.insert_or_assign(symbol, type);
 }
 
 void SemanticChecker::collectSelfParameter(const rx::ast::SelfFunctionParam &parameter, TypeId selfType){
-    // 根据 self、mut self、&self 或 &mut self 构造接收者类型，并声明 self 符号。
+    if(model_.types.get(selfType).kind() != TypeKind::Struct){
+        diagnose(parameter, "self parameter owner must be a struct");
+        return;
+    }
+    const TypeId type = parameter.isReference()
+        ? model_.types.reference(selfType, parameter.isMutable()) : selfType;
+    const auto declared = model_.declaredSymbols.find(parameter.id());
+    const SymbolId symbol = declared == model_.declaredSymbols.end() ? allocateSymbol() : declared->second;
+    if(!scope_.declareValue("self", symbol)){
+        diagnose(parameter, "duplicate self parameter");
+        return;
+    }
+
+    // &mut self 的绑定本身不可重新赋值；可变引用属性由 type 保存。
+    const bool isMutable = !parameter.isReference() && parameter.isMutable();
+    model_.symbols.insert_or_assign(symbol, SymbolInfo{"self", SymbolKind::Receiver,
+        parameter.id(), parameter.sourceSpan(), isMutable});
+    model_.declaredSymbols.insert_or_assign(parameter.id(), symbol);
+    model_.symbolTypes.insert_or_assign(symbol, type);
 }
 
 void SemanticChecker::collectImplBodies(const rx::ast::ImplItem &implementation){
-    // 在 impl 的 Self 类型上下文中检查所有方法、关联函数和关联常量初始化式。
+    const auto target = model_.resolvedTypes.find(implementation.type().id());
+    if(target == model_.resolvedTypes.end()) return;
+    const TypeId selfType = target->second;
+    const auto &type = model_.types.get(selfType);
+    if(type.kind() != TypeKind::Struct) return;
+    const auto structure = model_.declarations.structs.find(type.symbol());
+    if(structure == model_.declarations.structs.end()) return;
+    const auto &blocks = structure->second.implBlocks;
+    if(std::find(blocks.begin(), blocks.end(), &implementation) == blocks.end()) return;
+
+    // 常量求值也可能出现 Self::NAME；离开 impl 时恢复原有类型上下文。
+    struct ContextGuard{
+        std::optional<TypeId> &selfType;
+        std::optional<TypeId> previousSelfType;
+        ~ContextGuard(){ selfType = previousSelfType; }
+    } context{currentSelfType_, currentSelfType_};
+    currentSelfType_ = selfType;
+
+    for(const auto &item : implementation.items()){
+        const auto symbol = model_.declaredSymbols.find(item->id());
+        if(symbol == model_.declaredSymbols.end()) continue;
+        if(const auto *function = dynamic_cast<const rx::ast::FunctionItem *>(item.get())){
+            collectFunctionBody(*function, selfType);
+        }else if(dynamic_cast<const rx::ast::ConstItem *>(item.get()) != nullptr){
+            if(model_.declarations.constants.at(symbol->second).type.value == 0){
+                throw std::logic_error("constant type must be collected before its initializer");
+            }
+            evaluateConstant(symbol->second);
+        }
+    }
 }
 
 void SemanticChecker::checkMain(const rx::ast::Crate &crate){
-    // 检查唯一入口 main 的位置、参数、泛型和返回类型是否满足 Rx 程序入口要求。
+    // 顶层重名已由第一遍诊断；关联函数 main 不能充当程序入口。
+    const auto symbol = model_.declarations.globalValues.find("main");
+    if(symbol == model_.declarations.globalValues.end()){
+        diagnose(crate, "missing top-level main function");
+        return;
+    }
+    const auto declaration = model_.declarations.functions.find(symbol->second);
+    if(declaration == model_.declarations.functions.end()){
+        const auto &info = model_.symbols.at(symbol->second);
+        model_.diagnostics.push_back(Diagnosis{info.span, "main must be a top-level function"});
+        return;
+    }
+
+    const auto &function = *declaration->second.declaration;
+    if(function.selfParam() != nullptr || !function.parameters().empty()){
+        diagnose(function, "main must have no parameters or receiver");
+    }
+    if(function.hasGenericParameters()){
+        diagnose(function, "main must have no generic parameters");
+    }
+
+    // 签名尚未解析时，unit 也可直接从 AST 判断，避免调用未实现的类型解析器。
+    const TypeId returnType = declaration->second.returnType;
+    if(returnType.value != 0){
+        const auto kind = model_.types.get(returnType).kind();
+        if(kind != TypeKind::Unit && kind != TypeKind::Error){
+            diagnose(function, "main must return unit ()");
+        }
+    }else if(function.returnType() != nullptr &&
+             dynamic_cast<const rx::ast::UnitTypeRef *>(function.returnType()) == nullptr){
+        diagnose(function, "main must return unit ()");
+    }
 }
 
 TypeId SemanticChecker::resolveType(const rx::ast::TypeRef &type, std::optional<TypeId> selfType){

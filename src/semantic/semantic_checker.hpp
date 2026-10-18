@@ -15,6 +15,8 @@ private:
     SemanticModel model_;
     Scope scope_;
     std::unordered_map<std::string, SymbolId> builtinSymbols_;
+    std::optional<TypeId> currentReturnType_;
+    std::optional<TypeId> currentSelfType_;
     std::uint32_t nextSymbolId_ = 1;
 
     SymbolId allocateSymbol();

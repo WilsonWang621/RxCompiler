@@ -31,6 +31,9 @@ struct SemanticModel{
     // SymbolId -> 符号的永久信息
     std::unordered_map<SymbolId, SymbolInfo> symbols;
 
+    // 参数、接收者和局部变量符号 -> 已解析的类型。
+    std::unordered_map<SymbolId, TypeId> symbolTypes;
+
     // 声明节点 -> 为它分配的 SymbolId
     std::unordered_map<rx::ast::NodeId, SymbolId> declaredSymbols;
 
