@@ -1,16 +1,20 @@
 #pragma once
 
 #include "semantic_model.hpp"
+#include "scope.hpp"
 #include "ast.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class SemanticChecker{
 private:
     SemanticModel model_;
+    Scope scope_;
+    std::unordered_map<std::string, SymbolId> builtinSymbols_;
     std::uint32_t nextSymbolId_ = 1;
 
     SymbolId allocateSymbol();
