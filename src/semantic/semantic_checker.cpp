@@ -447,15 +447,231 @@ void SemanticChecker::checkMain(const rx::ast::Crate &crate){
 }
 
 TypeId SemanticChecker::resolveType(const rx::ast::TypeRef &type, std::optional<TypeId> selfType){
-    // 分派 unit、路径、引用和数组类型解析，并把结果记录到 resolvedTypes。
+    if(!selfType.has_value()) selfType = currentSelfType_;
+    struct ContextGuard{
+        std::optional<TypeId> &selfType;
+        std::optional<TypeId> previousSelfType;
+        ~ContextGuard(){ selfType = previousSelfType; }
+    } context{currentSelfType_, currentSelfType_};
+    currentSelfType_ = selfType;
+
+    const TypeId errorType = model_.types.builtin(TypeKind::Error);
+    TypeId result = errorType;
+    if(dynamic_cast<const rx::ast::UnitTypeRef *>(&type) != nullptr){
+        result = model_.types.builtin(TypeKind::Unit);
+    }else if(const auto *path = dynamic_cast<const rx::ast::TypePathRef *>(&type)){
+        return resolveTypePath(*path, selfType);
+    }else if(const auto *reference = dynamic_cast<const rx::ast::ReferenceTypeRef *>(&type)){
+        const TypeId referent = resolveType(reference->referent(), selfType);
+        if(referent != errorType){
+            result = model_.types.reference(referent, reference->isMutable());
+        }
+    }else if(const auto *array = dynamic_cast<const rx::ast::ArrayTypeRef *>(&type)){
+        const TypeId elementType = resolveType(array->elementType(), selfType);
+        const auto length = evaluateArrayLength(array->count());
+        if(elementType != errorType && length.has_value()){
+            result = model_.types.array(elementType, *length);
+        }
+    }else{
+        diagnose(type, "unsupported type");
+    }
+
+    model_.resolvedTypes.insert_or_assign(type.id(), result);
+    return result;
 }
 
 TypeId SemanticChecker::resolveTypePath(const rx::ast::TypePathRef &type, std::optional<TypeId> selfType){
-    // 解析内建类型、Self、用户结构体及 Box/Vec 实参，诊断路径和泛型实参数量错误。
+    if(!selfType.has_value()) selfType = currentSelfType_;
+    const TypeId errorType = model_.types.builtin(TypeKind::Error);
+    auto finish = [&](TypeId result){
+        model_.resolvedTypes.insert_or_assign(type.id(), result);
+        return result;
+    };
+    auto fail = [&](const rx::ast::ASTNode &node, std::string message){
+        diagnose(node, std::move(message));
+        return finish(errorType);
+    };
+
+    if(type.segments().size() != 1){
+        return fail(type, "type path must contain exactly one segment");
+    }
+    const auto &segment = *type.segments().front();
+    const std::string &name = segment.name();
+    const std::size_t count = segment.hasGenericArgs() ? segment.genericArgs()->size() : 0;
+    TypeId result = errorType;
+
+    if(name == "Self"){
+        if(count != 0) return fail(segment, "Self takes no concrete type arguments");
+        if(!selfType.has_value()){
+            return fail(segment, "Self is only allowed in a struct or impl context");
+        }
+        result = *selfType;
+        if(model_.types.get(result).kind() == TypeKind::Struct){
+            model_.resolvedSymbols.insert_or_assign(segment.id(), model_.types.get(result).symbol());
+            model_.resolvedSymbols.insert_or_assign(type.id(), model_.types.get(result).symbol());
+        }
+        return finish(result);
+    }
+
+    const auto symbol = scope_.lookupType(name);
+    if(!symbol.has_value()) return fail(segment, "unknown type '" + name + "'");
+    const auto &info = model_.symbols.at(*symbol);
+    if(info.kind == SymbolKind::Struct){
+        if(count != 0) return fail(segment, "struct takes no concrete type arguments");
+        result = model_.types.structure(*symbol);
+    }else if(info.kind == SymbolKind::Builtin){
+        static const std::unordered_map<std::string, TypeKind> primitives{
+            {"i32", TypeKind::I32}, {"u32", TypeKind::U32},
+            {"isize", TypeKind::Isize}, {"usize", TypeKind::Usize},
+            {"bool", TypeKind::Bool}
+        };
+        const auto primitive = primitives.find(name);
+        if(primitive != primitives.end()){
+            if(segment.hasGenericArgs()){
+                return fail(segment, "primitive type takes no generic arguments");
+            }
+            result = model_.types.builtin(primitive->second);
+        }else if(name == "Box" || name == "Vec"){
+            if(count != 1){
+                return fail(segment, name + " requires exactly one concrete type argument");
+            }
+            const TypeId elementType = resolveType(*segment.genericArgs()->front(), selfType);
+            if(elementType == errorType) return finish(errorType);
+            result = name == "Box" ? model_.types.box(elementType) : model_.types.vec(elementType);
+        }else{
+            return fail(segment, "'" + name + "' is a trait, not a concrete type");
+        }
+    }else{
+        return fail(segment, "'" + name + "' does not name a type");
+    }
+
+    model_.resolvedSymbols.insert_or_assign(segment.id(), *symbol);
+    model_.resolvedSymbols.insert_or_assign(type.id(), *symbol);
+    return finish(result);
 }
 
 std::optional<SymbolId> SemanticChecker::resolveValuePath(const rx::ast::PathExpr &path){
-    // 按路径形态查找局部值、全局值或 Type::member，并记录最终解析到的符号。
+    auto fail = [&](const rx::ast::ASTNode &node, std::string message) -> std::optional<SymbolId>{
+        diagnose(node, std::move(message));
+        return std::nullopt;
+    };
+    auto finish = [&](SymbolId symbol) -> std::optional<SymbolId>{
+        const auto &segment = *path.segments().back();
+        if(segment.hasGenericArgs()){
+            if(!segment.genericArgs()->empty()){
+                return fail(segment, "value path takes no concrete type arguments");
+            }
+            const auto kind = model_.symbols.at(symbol).kind;
+            if(kind != SymbolKind::Function && kind != SymbolKind::Builtin){
+                return fail(segment, "generic arguments require a function");
+            }
+        }
+        model_.resolvedSymbols.insert_or_assign(segment.id(), symbol);
+        model_.resolvedSymbols.insert_or_assign(path.id(), symbol);
+        return symbol;
+    };
+
+    if(path.segments().empty() || path.segments().size() > 2){
+        return fail(path, "unsupported value path");
+    }
+    if(path.segments().size() == 1){
+        const auto &segment = *path.segments().front();
+        const auto symbol = scope_.lookupValue(segment.name());
+        if(!symbol.has_value()){
+            return fail(segment, "unknown value '" + segment.name() + "'");
+        }
+        return finish(*symbol);
+    }
+
+    const auto &owner = *path.segments().front();
+    const auto &member = *path.segments().back();
+    const std::string &name = owner.name();
+    const std::size_t count = owner.hasGenericArgs() ? owner.genericArgs()->size() : 0;
+    const TypeId errorType = model_.types.builtin(TypeKind::Error);
+    TypeId selfType = errorType;
+
+    if(name == "Self"){
+        if(count != 0) return fail(owner, "Self takes no concrete type arguments");
+        if(!currentSelfType_.has_value()){
+            return fail(owner, "Self is only allowed in a struct or impl context");
+        }
+        selfType = *currentSelfType_;
+        if(selfType == errorType) return std::nullopt;
+        model_.resolvedSymbols.insert_or_assign(owner.id(), model_.types.get(selfType).symbol());
+    }else{
+        const auto symbol = scope_.lookupType(name);
+        if(!symbol.has_value()) return fail(owner, "unknown type '" + name + "'");
+        const auto &info = model_.symbols.at(*symbol);
+        if(info.kind == SymbolKind::Struct){
+            if(count != 0) return fail(owner, "struct takes no concrete type arguments");
+            selfType = model_.types.structure(*symbol);
+        }else if(info.kind == SymbolKind::Builtin && (name == "Box" || name == "Vec")){
+            if(count != 1){
+                return fail(owner, name + " requires exactly one concrete type argument");
+            }
+            const TypeId elementType = resolveType(*owner.genericArgs()->front(), currentSelfType_);
+            if(elementType == errorType) return std::nullopt;
+            selfType = name == "Box" ? model_.types.box(elementType) : model_.types.vec(elementType);
+        }else{
+            static const std::unordered_map<std::string, TypeKind> primitives{
+                {"i32", TypeKind::I32}, {"u32", TypeKind::U32},
+                {"isize", TypeKind::Isize}, {"usize", TypeKind::Usize},
+                {"bool", TypeKind::Bool}
+            };
+            const auto primitive = primitives.find(name);
+            if(info.kind != SymbolKind::Builtin || primitive == primitives.end()){
+                return fail(owner, "'" + name + "' is not a concrete type");
+            }
+            if(owner.hasGenericArgs()){
+                return fail(owner, "primitive type takes no generic arguments");
+            }
+            selfType = model_.types.builtin(primitive->second);
+        }
+        model_.resolvedSymbols.insert_or_assign(owner.id(), *symbol);
+    }
+    // 为 collectCall 保留 Type::member 中 Type 的具体类型。
+    model_.resolvedTypes.insert_or_assign(owner.id(), selfType);
+
+    const auto &type = model_.types.get(selfType);
+    bool builtin = false;
+    if(type.kind() == TypeKind::Struct){
+        const auto &structure = model_.declarations.structs.at(type.symbol());
+        const auto symbol = structure.associatedValues.find(member.name());
+        if(symbol != structure.associatedValues.end()) return finish(symbol->second);
+
+        if(member.name() == "clone"){
+            for(const auto &attribute : structure.declaration->attributes()){
+                const auto *derive = dynamic_cast<const rx::ast::DeriveAttribute *>(attribute.get());
+                if(derive != nullptr && std::find(derive->names().begin(), derive->names().end(), "Clone") != derive->names().end()){
+                    builtin = true;
+                    break;
+                }
+            }
+        }
+    }else{
+        builtin = member.name() == "clone";
+        if(type.kind() == TypeKind::Box || type.kind() == TypeKind::Vec){
+            builtin = builtin || member.name() == "new";
+        }
+        if(type.kind() == TypeKind::Vec){
+            builtin = builtin || member.name() == "len" || member.name() == "is_empty"
+                      || member.name() == "push" || member.name() == "remove";
+        }
+    }
+    if(!builtin) return fail(member, "unknown associated value '" + member.name() + "'");
+    if(member.hasGenericArgs() && !member.genericArgs()->empty()){
+        return fail(member, "builtin method takes no concrete type arguments");
+    }
+
+    // 同一具体类型的同名内建操作复用符号；不加入用户的全局作用域。
+    const std::string key = "@" + std::to_string(selfType.value) + "::" + member.name();
+    auto symbol = builtinSymbols_.find(key);
+    if(symbol == builtinSymbols_.end()){
+        const SymbolId allocated = allocateSymbol();
+        model_.symbols.emplace(allocated, SymbolInfo{member.name(), SymbolKind::Builtin, 0, {}, false});
+        symbol = builtinSymbols_.emplace(key, allocated).first;
+    }
+    return finish(symbol->second);
 }
 
 std::optional<ConstValue> SemanticChecker::evaluateConstant(SymbolId symbol){
