@@ -96,10 +96,11 @@ class TypeTable{
         }
     };
 
-    std::deque<Type> types_;
-    std::unordered_map<Type, TypeId, TypeHash> ids_;
+    std::deque<Type> types_;  //TypeId ──get()──> Type
+    std::unordered_map<Type, TypeId, TypeHash> ids_;  //Type   ──intern()──> TypeId
 
-    TypeId intern(const Type &type){
+    TypeId getOrCreate(const Type &type){
+        //已经存在就直接复用 ID。不存在则分配新 ID
         const auto found = ids_.find(type);
         if(found != ids_.end()) return found->second;
         if(types_.size() >= std::numeric_limits<std::uint32_t>::max()){
@@ -122,7 +123,7 @@ public:
         for(TypeKind kind : {TypeKind::Error, TypeKind::Unit, TypeKind::Never,
                              TypeKind::Bool, TypeKind::I32, TypeKind::U32,
                              TypeKind::Isize, TypeKind::Usize}){
-            intern(Type{kind});
+            getOrCreate(Type{kind});
         }
     }
 
@@ -146,26 +147,26 @@ public:
 
     TypeId structure(SymbolId symbol){
         if(symbol.value == 0) throw std::invalid_argument("invalid struct symbol");
-        return intern(Type{TypeKind::Struct, {}, symbol});
+        return getOrCreate(Type{TypeKind::Struct, {}, symbol});
     }
 
     TypeId reference(TypeId elementType, bool isMutable = false){
         get(elementType);
-        return intern(Type{TypeKind::Reference, elementType, {}, 0, isMutable});
+        return getOrCreate(Type{TypeKind::Reference, elementType, {}, 0, isMutable});
     }
 
     TypeId array(TypeId elementType, std::uint32_t length){
         get(elementType);
-        return intern(Type{TypeKind::Array, elementType, {}, length});
+        return getOrCreate(Type{TypeKind::Array, elementType, {}, length});
     }
 
     TypeId box(TypeId elementType){
         get(elementType);
-        return intern(Type{TypeKind::Box, elementType});
+        return getOrCreate(Type{TypeKind::Box, elementType});
     }
 
     TypeId vec(TypeId elementType){
         get(elementType);
-        return intern(Type{TypeKind::Vec, elementType});
+        return getOrCreate(Type{TypeKind::Vec, elementType});
     }
 };
