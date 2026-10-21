@@ -56,8 +56,7 @@ class Type{
     std::uint32_t length_ = 0; // Rx usize 为 32 位；数组长度已经过常量求值。
     bool isMutable_ = false; // 仅用于引用，与变量绑定本身的 mut 无关。
 
-    explicit Type(TypeKind kind, TypeId elementType = {}, SymbolId symbol = {},
-                  std::uint32_t length = 0, bool isMutable = false)
+    explicit Type(TypeKind kind, TypeId elementType = {}, SymbolId symbol = {}, std::uint32_t length = 0, bool isMutable = false)
         : kind_(kind), elementType_(elementType), symbol_(symbol), length_(length), isMutable_(isMutable) {}
 
 public:

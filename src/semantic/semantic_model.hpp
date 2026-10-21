@@ -9,7 +9,7 @@
 
 struct ExprInfo{
     bool mut;
-    
+    bool isPlace;
 };
 
 struct ConstValue{

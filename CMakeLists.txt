@@ -38,6 +38,14 @@ add_executable(compiler
     src/ast/ast.cpp
     src/frontend/ast_builder.cpp
     src/semantic/semantic_checker.cpp
+    src/semantic/declaration_collector.cpp
+    src/semantic/function_collector.cpp
+    src/semantic/resolution.cpp
+    src/semantic/const_evaluate.cpp
+    src/semantic/statement_collector.cpp
+    src/semantic/expression_collector.cpp
+    src/semantic/control_flow_collector.cpp
+    src/semantic/types_checker.cpp
     generated/Lexer.cpp
     generated/Parser.cpp
     generated/ParserBaseVisitor.cpp
