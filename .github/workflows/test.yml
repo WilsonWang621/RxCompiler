@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build compiler
+    name: Build compiler and semantic tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -26,22 +26,44 @@ jobs:
           sudo apt-get install -y build-essential cmake curl python3
 
       - name: Build compiler
+        id: build
         shell: bash
         run: |
           set -o pipefail
           mkdir -p target/ci
           make build 2>&1 | tee target/ci/build.log
 
+      - name: Run semantic tests
+        id: semantic
+        shell: bash
+        run: |
+          set -o pipefail
+          # Reuse the compiler built above; the runner creates an empty runtime.
+          make test STAGE=semantic VERBOSE=true BUILD= 2>&1 | tee target/ci/semantic.log
+
       - name: Write CI summary
         if: always()
         shell: bash
+        env:
+          BUILD_OUTCOME: ${{ steps.build.outcome }}
+          SEMANTIC_OUTCOME: ${{ steps.semantic.outcome }}
         run: |
           {
             echo '## Rx compiler CI record'
             echo
             echo "- Commit: \`${GITHUB_SHA}\`"
             echo "- Workflow run: [${GITHUB_RUN_ID} attempt ${GITHUB_RUN_ATTEMPT}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-            echo "- Compiler build: \`${{ job.status }}\`"
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            printf '| Compiler build | `%s` |\n' "${BUILD_OUTCOME}"
+            printf '| Semantic tests | `%s` |\n' "${SEMANTIC_OUTCOME}"
+            if [ -f target/ci/semantic.log ]; then
+              echo
+              echo '```text'
+              tail -n 3 target/ci/semantic.log
+              echo '```'
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload CI records
@@ -51,13 +73,15 @@ jobs:
           name: ci-record-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             target/ci/
+            target/tests/
             target/build/CMakeCache.txt
             target/build/CMakeFiles/CMakeOutput.log
+            target/build/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: warn
           retention-days: 90
 
       - name: Upload compiler
-        if: success()
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@v4
         with:
           name: compiler-${{ github.sha }}
