@@ -40,7 +40,7 @@ bool TypesChecker::canCast(TypeId source, TypeId target) const{
         //checker_.model_.diagnostics.push_back(Diagnosis{});
         return false;
     }
-    if(source != checker_.model_.types.builtin(TypeKind::I32) && source != checker_.model_.types.builtin(TypeKind::U32) && source != checker_.model_.types.builtin(TypeKind::Isize) && source != checker_.model_.types.builtin(TypeKind::Usize) || source != checker_.model_.types.builtin(TypeKind::Bool)){
+    if(source != checker_.model_.types.builtin(TypeKind::I32) && source != checker_.model_.types.builtin(TypeKind::U32) && source != checker_.model_.types.builtin(TypeKind::Isize) && source != checker_.model_.types.builtin(TypeKind::Usize) && source != checker_.model_.types.builtin(TypeKind::Bool)){
         return false;
     }
     return true;
