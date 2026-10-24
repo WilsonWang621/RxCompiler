@@ -2,6 +2,7 @@
 #include "semantic_checker.hpp"
 
 #include <limits>
+#include <unordered_set>
 
 TypeId ExpressionCollector::collectExpr(const rx::ast::Expr &expression, std::optional<TypeId> expectedType){
     // 按具体 AST 类型分派检查，记录 expressionTypes 和 place、可变性等 ExprInfo。
@@ -68,6 +69,14 @@ TypeId ExpressionCollector::collectExpr(const rx::ast::Expr &expression, std::op
     if(result != errorType && expectedType.has_value() && !checker_.typesChecker_.canCoerce(result, *expectedType)){
         checker_.diagnose(expression, "expression type does not match expected type");
         result = errorType;
+    }
+
+    if(result != errorType && expectedType.has_value()){
+        const auto &expected = checker_.model_.types.get(*expectedType);
+        if(expected.kind() == TypeKind::Reference && expected.isMutable() && hasSharedAccess(expression)){
+            checker_.diagnose(expression, "mutable reborrow requires mutable access to its source");
+            result = errorType;
+        }
     }
 
     checker_.model_.expressionTypes.insert_or_assign(expression.id(), result);
@@ -264,45 +273,7 @@ TypeId ExpressionCollector::collectUnaryExpr(const rx::ast::UnaryExpr &expressio
         }
         bool isMutable = info.kind() == TypeKind::Reference ? info.isMutable() :
                          (!operandInfo.isPlace || operandInfo.mut);
-        bool sharedAccess = false;
-        const rx::ast::Expr *current = &expression.operand();
-
-        // 回溯已有访问路径，区分不可变绑定和共享引用造成的只读访问。
-        while(current != nullptr && !sharedAccess &&
-              checker_.model_.expressionInfo.at(current->id()).isPlace){
-            const rx::ast::Expr *base = nullptr;
-            bool explicitDeref = false;
-            bool indexing = false;
-            if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(current)){
-                if(unary->op() != "*") break;
-                base = &unary->operand();
-                explicitDeref = true;
-            }else if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(current)){
-                base = &field->base();
-            }else if(const auto *index = dynamic_cast<const rx::ast::IndexExpr *>(current)){
-                base = &index->base();
-                indexing = true;
-            }else{
-                break;
-            }
-
-            TypeId baseType = checker_.model_.expressionTypes.at(base->id());
-            while(true){
-                const auto &baseInfo = checker_.model_.types.get(baseType);
-                if(baseInfo.kind() == TypeKind::Reference && !baseInfo.isMutable()){
-                    sharedAccess = true;
-                    break;
-                }
-                if(explicitDeref || (baseInfo.kind() != TypeKind::Reference && baseInfo.kind() != TypeKind::Box)) break;
-                baseType = baseInfo.elementType();
-            }
-            // Vec 索引隐式借用容器；共享索引访问同样阻断后续可变解引用。
-            if(indexing && checker_.model_.types.get(baseType).kind() == TypeKind::Vec &&
-               !checker_.model_.expressionInfo.at(current->id()).mut){
-                sharedAccess = true;
-            }
-            current = base;
-        }
+        const bool sharedAccess = hasSharedAccess(expression.operand());
         checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{isMutable && !sharedAccess, true});
         return info.elementType();
     }
@@ -479,43 +450,7 @@ TypeId ExpressionCollector::collectIndex(const rx::ast::IndexExpr &expression){
     }
     if(baseType == neverType) return neverType;
 
-    bool sharedAccess = false;
-    const rx::ast::Expr *current = &expression.base();
-    // 回溯显式解引用、字段及先前索引，保留共享访问造成的限制。
-    while(current != nullptr && !sharedAccess &&
-          checker_.model_.expressionInfo.at(current->id()).isPlace){
-        const rx::ast::Expr *base = nullptr;
-        bool explicitDeref = false;
-        bool indexing = false;
-        if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(current)){
-            if(unary->op() != "*") break;
-            base = &unary->operand();
-            explicitDeref = true;
-        }else if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(current)){
-            base = &field->base();
-        }else if(const auto *index = dynamic_cast<const rx::ast::IndexExpr *>(current)){
-            base = &index->base();
-            indexing = true;
-        }else{
-            break;
-        }
-
-        TypeId ownerType = checker_.model_.expressionTypes.at(base->id());
-        while(true){
-            const auto &owner = checker_.model_.types.get(ownerType);
-            if(owner.kind() == TypeKind::Reference && !owner.isMutable()){
-                sharedAccess = true;
-                break;
-            }
-            if(explicitDeref || (owner.kind() != TypeKind::Reference && owner.kind() != TypeKind::Box)) break;
-            ownerType = owner.elementType();
-        }
-        if(indexing && checker_.model_.types.get(ownerType).kind() == TypeKind::Vec &&
-           !checker_.model_.expressionInfo.at(current->id()).mut){
-            sharedAccess = true;
-        }
-        current = base;
-    }
+    bool sharedAccess = hasSharedAccess(expression.base());
 
     const auto &baseInfo = checker_.model_.expressionInfo.at(expression.base().id());
     bool isMutable = (!baseInfo.isPlace || baseInfo.mut) && !sharedAccess;
@@ -540,19 +475,298 @@ TypeId ExpressionCollector::collectIndex(const rx::ast::IndexExpr &expression){
 }
 
 TypeId ExpressionCollector::collectStructExpr(const rx::ast::StructExpr &expression){
-    // 解析结构体，检查字段无重复、无遗漏且初始化值匹配声明类型，返回结构体类型。
+    // 结构体构造使用类型命名空间，不能通过 resolveValuePath 查找同名函数。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
+    const auto &path = expression.path();
+    TypeId result = errorType;
+    if(path.segments().size() == 1){
+        const auto &segment = *path.segments().front();
+        if(!segment.hasGenericArgs() || segment.genericArgs()->empty()){
+            if(segment.name() == "Self"){
+                result = checker_.currentSelfType_.value_or(errorType);
+            }else{
+                const auto symbol = checker_.scope_.lookupType(segment.name());
+                if(symbol.has_value() && checker_.model_.symbols.at(*symbol).kind == SymbolKind::Struct){
+                    result = checker_.model_.types.structure(*symbol);
+                }
+            }
+        }
+    }
+    const StructDeclarationInfo *structure = nullptr;
+    if(checker_.model_.types.get(result).kind() == TypeKind::Struct){
+        const SymbolId symbol = checker_.model_.types.get(result).symbol();
+        structure = &checker_.model_.declarations.structs.at(symbol);
+        checker_.model_.resolvedSymbols.insert_or_assign(expression.id(), symbol);
+        checker_.model_.resolvedSymbols.insert_or_assign(path.id(), symbol);
+        checker_.model_.resolvedSymbols.insert_or_assign(path.segments().front()->id(), symbol);
+        checker_.model_.resolvedTypes.insert_or_assign(path.id(), result);
+    }else{
+        checker_.diagnose(path, "struct expression must name a declared struct without type arguments");
+    }
+
+    bool valid = structure != nullptr;
+    std::unordered_set<std::string> initialized;
+    for(const auto &field : expression.fields()){
+        if(!initialized.insert(field->name()).second){
+            checker_.diagnose(*field, "duplicate initializer field '" + field->name() + "'");
+            valid = false;
+        }
+        std::optional<TypeId> expected;
+        if(structure != nullptr){
+            const auto declared = structure->fieldTypes.find(field->name());
+            if(declared == structure->fieldTypes.end()){
+                checker_.diagnose(*field, "unknown initializer field '" + field->name() + "'");
+                valid = false;
+            }else{
+                expected = declared->second;
+            }
+        }
+        if(collectExpr(field->value(), expected) == errorType || expected == errorType) valid = false;
+    }
+    if(structure != nullptr){
+        for(const auto &field : structure->declaration->fields()){
+            if(initialized.find(field->name()) == initialized.end()){
+                checker_.diagnose(expression, "missing initializer field '" + field->name() + "'");
+                valid = false;
+            }
+        }
+    }
+    return valid ? result : errorType;
 }
 
 TypeId ExpressionCollector::collectField(const rx::ast::FieldExpr &expression){
-    // 根据基表达式类型查找字段，返回字段类型并传播基 place 的可变访问能力。
+    // 自动解引用到结构体，字段作为 place 继承访问路径的可变性。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
+    TypeId type = collectExpr(expression.base());
+    if(type == errorType || type == checker_.model_.types.builtin(TypeKind::Never)) return type;
+    const auto &baseInfo = checker_.model_.expressionInfo.at(expression.base().id());
+    bool sharedAccess = hasSharedAccess(expression.base());
+    bool isMutable = (!baseInfo.isPlace || baseInfo.mut) && !sharedAccess;
+    while(true){
+        const auto &owner = checker_.model_.types.get(type);
+        if(owner.kind() != TypeKind::Reference && owner.kind() != TypeKind::Box) break;
+        if(owner.kind() == TypeKind::Reference){
+            if(!owner.isMutable()) sharedAccess = true;
+            isMutable = owner.isMutable() && !sharedAccess;
+        }
+        type = owner.elementType();
+    }
+    const auto &owner = checker_.model_.types.get(type);
+    if(owner.kind() == TypeKind::Struct){
+        const auto &fields = checker_.model_.declarations.structs.at(owner.symbol()).fieldTypes;
+        const auto field = fields.find(expression.field());
+        if(field != fields.end()){
+            checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{isMutable, true});
+            return field->second;
+        }
+    }
+    checker_.diagnose(expression, "unknown field '" + expression.field() + "'");
+    return errorType;
 }
 
 TypeId ExpressionCollector::collectCall(const rx::ast::CallExpr &expression){
-    // 解析调用目标，按函数签名检查实参数量、求值顺序和类型，返回函数结果类型。
+    // 限定路径调用使用普通参数转换，接收者作为第一个显式参数。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
+    TypeId result = errorType;
+    std::vector<TypeId> parameters;
+    if(const auto *path = dynamic_cast<const rx::ast::PathExpr *>(&expression.callee())){
+        const auto symbol = checker_.resolution_.resolveValuePath(*path);
+        if(symbol.has_value()){
+            const auto &info = checker_.model_.symbols.at(*symbol);
+            checker_.model_.resolvedSymbols.insert_or_assign(expression.id(), *symbol);
+            if(info.kind == SymbolKind::Function){
+                const auto &function = checker_.model_.declarations.functions.at(*symbol);
+                if(function.receiverType.has_value()) parameters.push_back(*function.receiverType);
+                parameters.insert(parameters.end(), function.parameterTypes.begin(), function.parameterTypes.end());
+                result = function.returnType;
+            }else if(info.kind == SymbolKind::Builtin){
+                const TypeId owner = path->segments().size() == 2 ?
+                                     checker_.model_.resolvedTypes.at(path->segments().front()->id()) : TypeId{};
+                if(!collectBuiltinSignature(owner, info.name, parameters, result)){
+                    checker_.diagnose(expression, "builtin operation is not available for this type");
+                }
+            }else{
+                checker_.diagnose(expression.callee(), "call target is not a function");
+            }
+        }
+    }else{
+        if(collectExpr(expression.callee()) != errorType){
+            checker_.diagnose(expression.callee(), "call target must be a function path");
+        }
+    }
+    return checkCallArguments(expression.arguments(), parameters, result, expression);
 }
 
 TypeId ExpressionCollector::collectMethodCall(const rx::ast::MethodCallExpr &expression){
-    // 根据接收者类型查找方法，执行允许的自动借用或解引用，并检查其余实参。
+    // 按 T、&T、&mut T 的顺序检查每一层解引用后的候选。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
+    const auto &method = expression.method();
+    bool valid = !method.hasGenericArgs() || method.genericArgs()->empty();
+    if(!valid) checker_.diagnose(method, "method takes no concrete type arguments");
+    TypeId type = collectExpr(expression.receiver());
+    std::vector<TypeId> parameters;
+    if(type == errorType){
+        return checkCallArguments(expression.arguments(), parameters, type, expression);
+    }
+    const auto &receiver = checker_.model_.expressionInfo.at(expression.receiver().id());
+    bool sharedAccess = hasSharedAccess(expression.receiver());
+    bool isMutable = (!receiver.isPlace || receiver.mut) && !sharedAccess;
+    while(true){
+        for(int adjustment = 0; adjustment < 3; ++adjustment){
+            const TypeId candidate = adjustment == 0 ? type : checker_.model_.types.reference(type, adjustment == 2);
+            const auto &candidateInfo = checker_.model_.types.get(candidate);
+            const TypeId owner = candidateInfo.kind() == TypeKind::Reference ? candidateInfo.elementType() : candidate;
+            const auto &ownerInfo = checker_.model_.types.get(owner);
+            TypeId result = errorType;
+            SymbolId symbol;
+            bool found = false;
+            if(ownerInfo.kind() == TypeKind::Struct){
+                const auto &values = checker_.model_.declarations.structs.at(ownerInfo.symbol()).associatedValues;
+                const auto member = values.find(method.name());
+                if(member != values.end() && checker_.model_.symbols.at(member->second).kind == SymbolKind::Function){
+                    const auto &function = checker_.model_.declarations.functions.at(member->second);
+                    if(function.receiverType == candidate){
+                        parameters = function.parameterTypes;
+                        result = function.returnType;
+                        symbol = member->second;
+                        found = true;
+                    }
+                }
+            }
+            if(!found && method.name() != "new" && candidateInfo.kind() == TypeKind::Reference){
+                std::vector<TypeId> builtinParameters;
+                if(collectBuiltinSignature(owner, method.name(), builtinParameters, result) &&
+                   !builtinParameters.empty() && builtinParameters.front() == candidate){
+                    parameters.assign(builtinParameters.begin() + 1, builtinParameters.end());
+                    const std::string key = "@" + std::to_string(owner.value) + "::" + method.name();
+                    auto &builtin = checker_.builtinSymbols_[key];
+                    if(builtin.value == 0){
+                        builtin = checker_.allocateSymbol();
+                        checker_.model_.symbols.emplace(builtin, SymbolInfo{method.name(), SymbolKind::Builtin, 0, {}, false});
+                    }
+                    symbol = builtin;
+                    found = true;
+                }
+            }
+            if(!found) continue;
+            // 先选定方法，再检查可变访问和参数，失败时不继续搜索后续候选。
+            if(candidateInfo.kind() == TypeKind::Reference && candidateInfo.isMutable() &&
+               (sharedAccess || (adjustment != 0 && !isMutable))){
+                checker_.diagnose(expression.receiver(), "method requires mutable access to its receiver");
+                valid = false;
+            }
+            checker_.model_.resolvedSymbols.insert_or_assign(method.id(), symbol);
+            checker_.model_.resolvedSymbols.insert_or_assign(expression.id(), symbol);
+            checker_.model_.resolvedTypes.insert_or_assign(method.id(), owner);
+            const TypeId checked = checkCallArguments(expression.arguments(), parameters, result, expression);
+            return valid ? checked : errorType;
+        }
+        const auto &owner = checker_.model_.types.get(type);
+        if(owner.kind() != TypeKind::Reference && owner.kind() != TypeKind::Box) break;
+        if(owner.kind() == TypeKind::Reference){
+            if(!owner.isMutable()) sharedAccess = true;
+            isMutable = owner.isMutable() && !sharedAccess;
+        }
+        type = owner.elementType();
+    }
+    checker_.diagnose(method, "no matching method '" + method.name() + "'");
+    return checkCallArguments(expression.arguments(), parameters, errorType, expression);
+}
+
+TypeId ExpressionCollector::checkCallArguments(const std::vector<rx::ast::ExprPtr> &arguments, const std::vector<TypeId> &parameters, TypeId result, const rx::ast::ASTNode &node){
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    bool valid = result != errorType;
+    if(valid && arguments.size() != parameters.size()){
+        checker_.diagnose(node, "argument count does not match function signature");
+        valid = false;
+    }
+    for(std::size_t index = 0; index < arguments.size(); ++index){
+        const std::optional<TypeId> expected = index < parameters.size() ? std::optional<TypeId>(parameters[index]) : std::nullopt;
+        if(collectExpr(*arguments[index], expected) == errorType || expected == errorType) valid = false;
+    }
+    return valid ? result : errorType;
+}
+
+bool ExpressionCollector::collectBuiltinSignature(TypeId owner, const std::string &name, std::vector<TypeId> &parameters, TypeId &result){
+    auto &types = checker_.model_.types;
+    result = types.builtin(TypeKind::Error);
+    parameters.clear();
+    if(owner.value == 0){
+        if(name == "get_i32") result = types.builtin(TypeKind::I32);
+        if(name == "print_i32" || name == "println_i32"){
+            parameters.push_back(types.builtin(TypeKind::I32));
+            result = types.builtin(TypeKind::Unit);
+        }
+    }else{
+        const auto &info = types.get(owner);
+        if(name == "new" && (info.kind() == TypeKind::Box || info.kind() == TypeKind::Vec)){
+            if(info.kind() == TypeKind::Box) parameters.push_back(info.elementType());
+            result = owner;
+        }else if(name == "clone" && checker_.typesChecker_.hasClone(owner)){
+            parameters.push_back(types.reference(owner, false));
+            result = owner;
+        }else if(name == "len" && (info.kind() == TypeKind::Array || info.kind() == TypeKind::Vec)){
+            parameters.push_back(types.reference(owner, false));
+            result = types.builtin(TypeKind::Usize);
+        }else if(info.kind() == TypeKind::Vec){
+            if(name == "is_empty"){
+                parameters.push_back(types.reference(owner, false));
+                result = types.builtin(TypeKind::Bool);
+            }else if(name == "push" || name == "remove"){
+                parameters.push_back(types.reference(owner, true));
+                parameters.push_back(name == "push" ? info.elementType() : types.builtin(TypeKind::Usize));
+                result = name == "push" ? types.builtin(TypeKind::Unit) : info.elementType();
+            }
+        }
+    }
+    return result != types.builtin(TypeKind::Error);
+}
+
+bool ExpressionCollector::hasSharedAccess(const rx::ast::Expr &expression) const{
+    bool sharedAccess = false;
+    const rx::ast::Expr *current = &expression;
+
+    // 回溯已有访问路径，区分不可变绑定和共享引用造成的只读访问。
+    while(current != nullptr && !sharedAccess &&
+          checker_.model_.expressionInfo.at(current->id()).isPlace){
+        const rx::ast::Expr *base = nullptr;
+        bool explicitDeref = false;
+        bool indexing = false;
+        if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(current)){
+            if(unary->op() != "*") break;
+            base = &unary->operand();
+            explicitDeref = true;
+        }else if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(current)){
+            base = &field->base();
+        }else if(const auto *index = dynamic_cast<const rx::ast::IndexExpr *>(current)){
+            base = &index->base();
+            indexing = true;
+        }else{
+            break;
+        }
+
+        TypeId baseType = checker_.model_.expressionTypes.at(base->id());
+        while(true){
+            const auto &baseInfo = checker_.model_.types.get(baseType);
+            if(baseInfo.kind() == TypeKind::Reference && !baseInfo.isMutable()){
+                sharedAccess = true;
+                break;
+            }
+            if(explicitDeref || (baseInfo.kind() != TypeKind::Reference && baseInfo.kind() != TypeKind::Box)) break;
+            baseType = baseInfo.elementType();
+        }
+        // Vec 索引隐式借用容器；共享索引访问同样阻断后续可变解引用。
+        if(indexing && checker_.model_.types.get(baseType).kind() == TypeKind::Vec &&
+           !checker_.model_.expressionInfo.at(current->id()).mut){
+            sharedAccess = true;
+        }
+        current = base;
+    }
+    return sharedAccess;
 }
 
 bool ExpressionCollector::checkMutablePlace(const rx::ast::Expr &expression){

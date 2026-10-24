@@ -11,6 +11,9 @@ class SemanticChecker;
 class ExpressionCollector{
 private:
     SemanticChecker &checker_;
+    bool hasSharedAccess(const rx::ast::Expr &expression) const;
+    bool collectBuiltinSignature(TypeId owner, const std::string &name, std::vector<TypeId> &parameters, TypeId &result);
+    TypeId checkCallArguments(const std::vector<rx::ast::ExprPtr> &arguments, const std::vector<TypeId> &parameters, TypeId result, const rx::ast::ASTNode &node);
 
 public:
     explicit ExpressionCollector(SemanticChecker &checker) : checker_(checker){}
