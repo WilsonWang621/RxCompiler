@@ -132,8 +132,7 @@ TypeId ExpressionCollector::collectPath(const rx::ast::PathExpr &path){
         checker_.model_.constantValues.insert_or_assign(path.id(), *value);
         return value->type;
     }
-    if(info.kind == SymbolKind::Local || info.kind == SymbolKind::Parameter ||
-       info.kind == SymbolKind::Receiver){
+    if(info.kind == SymbolKind::Local || info.kind == SymbolKind::Parameter || info.kind == SymbolKind::Receiver){
         const TypeId type = checker_.model_.symbolTypes.at(*symbol);
         checker_.model_.types.get(type);
         checker_.model_.expressionInfo.insert_or_assign(path.id(), ExprInfo{info.isMutable, true});
@@ -169,8 +168,7 @@ TypeId ExpressionCollector::collectBinaryExpr(const rx::ast::BinaryExpr &express
     }
 
     if(logical){
-        if(!checker_.typesChecker_.canCoerce(left, boolType) ||
-           !checker_.typesChecker_.canCoerce(right, boolType)){
+        if(!checker_.typesChecker_.canCoerce(left, boolType) || !checker_.typesChecker_.canCoerce(right, boolType)){
             checker_.diagnose(expression, "logical operators require bool operands");
             return errorType;
         }
@@ -382,8 +380,7 @@ TypeId ExpressionCollector::collectCompoundAssignment(const rx::ast::CompoundAss
     if(shift){
         valid = target.isInteger() && scalar.isInteger();
     }else{
-        valid = targetType == scalarType &&
-                (target.isInteger() || (bitwise && target.kind() == TypeKind::Bool));
+        valid = targetType == scalarType && (target.isInteger() || (bitwise && target.kind() == TypeKind::Bool));
     }
     if(!valid){
         checker_.diagnose(assignment, "invalid operands for compound assignment operator '" + op + "'");
@@ -430,8 +427,7 @@ TypeId ExpressionCollector::collectArray(const rx::ast::ArrayExpr &array, std::o
     }
 
     // 有预期类型时采用转换目标；否则在各元素独立定型后计算 LUB。
-    const TypeId elementType = expectedElement.has_value() ? *expectedElement :
-                               checker_.typesChecker_.collectCommonType(elements, array);
+    const TypeId elementType = expectedElement.has_value() ? *expectedElement : checker_.typesChecker_.collectCommonType(elements, array);
     if(elementType == errorType) return errorType;
     return checker_.model_.types.array(elementType, length);
 }

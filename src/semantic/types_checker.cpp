@@ -360,12 +360,10 @@ void TypesChecker::checkStructDerive(const rx::ast::StructItem &structure){
         }
     }
 
-    if(std::find(derived.begin(), derived.end(), "Copy") != derived.end() &&
-       std::find(derived.begin(), derived.end(), "Clone") == derived.end()){
+    if(std::find(derived.begin(), derived.end(), "Copy") != derived.end() && std::find(derived.begin(), derived.end(), "Clone") == derived.end()){
         checker_.diagnose(structure, "deriving Copy requires explicitly deriving Clone");
     }
-    if(std::find(derived.begin(), derived.end(), "Eq") != derived.end() &&
-       std::find(derived.begin(), derived.end(), "PartialEq") == derived.end()){
+    if(std::find(derived.begin(), derived.end(), "Eq") != derived.end() && std::find(derived.begin(), derived.end(), "PartialEq") == derived.end()){
         checker_.diagnose(structure, "deriving Eq requires explicitly deriving PartialEq");
     }
 
