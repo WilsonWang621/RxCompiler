@@ -48,7 +48,34 @@ bool TypesChecker::canCast(TypeId source, TypeId target) const{
 
 TypeId TypesChecker::collectCommonType(const std::vector<TypeId> &types, const rx::ast::ASTNode &node){
     // 忽略 never 后按源码顺序执行 LUB 转换，失败时诊断并返回 Error 类型。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    const TypeId neverType = checker_.model_.types.builtin(TypeKind::Never);
+    for(TypeId type : types){
+        if(type == errorType) return errorType;
+    }
 
+    TypeId commonType = neverType;
+    for(std::size_t index = 0; index < types.size(); ++index){
+        const TypeId type = types[index];
+        checker_.model_.types.get(type);
+        if(type == neverType) continue;
+        if(commonType == neverType){
+            commonType = type;
+            continue;
+        }
+        if(canCoerce(type, commonType)) continue;
+
+        bool compatible = canCoerce(commonType, type);
+        for(std::size_t previous = 0; compatible && previous < index; ++previous){
+            compatible = canCoerce(types[previous], type);
+        }
+        if(!compatible){
+            checker_.diagnose(node, "incompatible types in common type conversion");
+            return errorType;
+        }
+        commonType = type;
+    }
+    return commonType;
 }
 
 bool TypesChecker::hasCopy(TypeId type) const{
