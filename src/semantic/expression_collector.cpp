@@ -1,6 +1,8 @@
 #include "expression_collector.hpp"
 #include "semantic_checker.hpp"
 
+#include <limits>
+
 TypeId ExpressionCollector::collectExpr(const rx::ast::Expr &expression, std::optional<TypeId> expectedType){
     // 按具体 AST 类型分派检查，记录 expressionTypes 和 place、可变性等 ExprInfo。
     const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
@@ -337,22 +339,208 @@ TypeId ExpressionCollector::collectCast(const rx::ast::CastExpr &expression){
 
 TypeId ExpressionCollector::collectAssignment(const rx::ast::AssignExpr &assignment){
     // 检查左侧为可变 place，以其类型检查右侧的求值和隐式转换，结果为 unit。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(assignment.id(), ExprInfo{false, false});
+
+    // 这里按类型依赖先检查目标；运行时代码仍需先求右值，再计算目标地址。
+    const TypeId targetType = collectExpr(assignment.target());
+    const bool mutableTarget = checkMutablePlace(assignment.target());
+    const TypeId valueType = collectExpr(assignment.value(), targetType);
+    if(targetType == errorType || valueType == errorType || !mutableTarget) return errorType;
+    return checker_.model_.types.builtin(TypeKind::Unit);
 }
 
 TypeId ExpressionCollector::collectCompoundAssignment(const rx::ast::CompoundAssignExpr &assignment){
     // 检查目标可变性及对应二元运算约束，保证目标只求值一次，结果为 unit。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    const TypeId neverType = checker_.model_.types.builtin(TypeKind::Never);
+    checker_.model_.expressionInfo.insert_or_assign(assignment.id(), ExprInfo{false, false});
+
+    const TypeId targetType = collectExpr(assignment.target());
+    const bool mutableTarget = checkMutablePlace(assignment.target());
+    // 复合赋值不使用目标类型推导右侧整数，也不改写成重复目标的二元表达式。
+    const TypeId valueType = collectExpr(assignment.value());
+    if(targetType == errorType || valueType == errorType || !mutableTarget) return errorType;
+
+    const std::string &op = assignment.op();
+    const bool arithmetic = op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%=";
+    const bool bitwise = op == "&=" || op == "|=" || op == "^=";
+    const bool shift = op == "<<=" || op == ">>=";
+    if(!arithmetic && !bitwise && !shift){
+        checker_.diagnose(assignment, "unsupported compound assignment operator '" + op + "'");
+        return errorType;
+    }
+
+    // 左侧必须直接是原始标量 place；右侧允许一层共享引用。
+    TypeId scalarType = valueType == neverType ? targetType : valueType;
+    const auto &value = checker_.model_.types.get(scalarType);
+    if(value.kind() == TypeKind::Reference && !value.isMutable()) scalarType = value.elementType();
+    const auto &target = checker_.model_.types.get(targetType);
+    const auto &scalar = checker_.model_.types.get(scalarType);
+
+    bool valid = false;
+    if(shift){
+        valid = target.isInteger() && scalar.isInteger();
+    }else{
+        valid = targetType == scalarType &&
+                (target.isInteger() || (bitwise && target.kind() == TypeKind::Bool));
+    }
+    if(!valid){
+        checker_.diagnose(assignment, "invalid operands for compound assignment operator '" + op + "'");
+        return errorType;
+    }
+    return checker_.model_.types.builtin(TypeKind::Unit);
 }
 
 TypeId ExpressionCollector::collectArray(const rx::ast::ArrayExpr &array, std::optional<TypeId> expectedType){
-    // 检查各元素，使用预期数组元素类型或 LUB 合并类型，并以元素数构造数组类型。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(array.id(), ExprInfo{false, false});
+    std::optional<TypeId> expectedElement;
+    std::optional<std::uint32_t> expectedLength;
+    if(expectedType.has_value()){
+        const auto &expected = checker_.model_.types.get(*expectedType);
+        if(expected.kind() == TypeKind::Array){
+            expectedElement = expected.elementType();
+            expectedLength = expected.length();
+        }
+    }
+
+    std::vector<TypeId> elements;
+    elements.reserve(array.elements().size());
+    bool valid = true;
+    for(const auto &element : array.elements()){
+        const TypeId type = collectExpr(*element, expectedElement);
+        elements.push_back(type);
+        if(type == errorType) valid = false;
+    }
+
+    if(array.elements().size() > std::numeric_limits<std::uint32_t>::max()){
+        checker_.diagnose(array, "array has too many elements");
+        return errorType;
+    }
+    const auto length = static_cast<std::uint32_t>(array.elements().size());
+    if(expectedLength.has_value() && *expectedLength != length){
+        checker_.diagnose(array, "array length does not match expected type");
+        valid = false;
+    }
+    if(!valid) return errorType;
+    if(elements.empty() && !expectedElement.has_value()){
+        checker_.diagnose(array, "cannot infer element type of an empty array");
+        return errorType;
+    }
+
+    // 有预期类型时采用转换目标；否则在各元素独立定型后计算 LUB。
+    const TypeId elementType = expectedElement.has_value() ? *expectedElement :
+                               checker_.typesChecker_.collectCommonType(elements, array);
+    if(elementType == errorType) return errorType;
+    return checker_.model_.types.array(elementType, length);
 }
 
 TypeId ExpressionCollector::collectRepeatedArray(const rx::ast::ArrayRepeatExpr &repeatedArray, std::optional<TypeId> expectedType){
-    // 检查重复值类型、常量长度及复制要求，并构造对应的固定数组类型。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    checker_.model_.expressionInfo.insert_or_assign(repeatedArray.id(), ExprInfo{false, false});
+    std::optional<TypeId> expectedElement;
+    std::optional<std::uint32_t> expectedLength;
+    if(expectedType.has_value()){
+        const auto &expected = checker_.model_.types.get(*expectedType);
+        if(expected.kind() == TypeKind::Array){
+            expectedElement = expected.elementType();
+            expectedLength = expected.length();
+        }
+    }
+
+    // 只有长度是常量上下文，元素仍按普通表达式检查一次。
+    const auto length = checker_.constEvaluate_.evaluateArrayLength(repeatedArray.count());
+    const TypeId valueType = collectExpr(repeatedArray.value(), expectedElement);
+    bool valid = length.has_value() && valueType != errorType;
+    if(length.has_value() && expectedLength.has_value() && *length != *expectedLength){
+        checker_.diagnose(repeatedArray, "array length does not match expected type");
+        valid = false;
+    }
+    if(!valid) return errorType;
+
+    const TypeId elementType = expectedElement.has_value() ? *expectedElement : valueType;
+    if(elementType == errorType) return errorType;
+    if(*length > 1 && !checker_.typesChecker_.hasCopy(elementType)){
+        checker_.diagnose(repeatedArray.value(), "repeating an element more than once requires Copy");
+        return errorType;
+    }
+    return checker_.model_.types.array(elementType, *length);
 }
 
 TypeId ExpressionCollector::collectIndex(const rx::ast::IndexExpr &expression){
-    // 检查基值可索引且索引为 usize，返回元素类型并继承适当的 place 和可变性。
+    const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    const TypeId neverType = checker_.model_.types.builtin(TypeKind::Never);
+    const TypeId usizeType = checker_.model_.types.builtin(TypeKind::Usize);
+    checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
+
+    const TypeId baseType = collectExpr(expression.base());
+    const TypeId indexType = collectExpr(expression.index(), usizeType);
+    if(baseType == errorType || indexType == errorType) return errorType;
+    if(indexType != usizeType){
+        checker_.diagnose(expression.index(), "index must have type usize");
+        return errorType;
+    }
+    if(baseType == neverType) return neverType;
+
+    bool sharedAccess = false;
+    const rx::ast::Expr *current = &expression.base();
+    // 回溯显式解引用、字段及先前索引，保留共享访问造成的限制。
+    while(current != nullptr && !sharedAccess &&
+          checker_.model_.expressionInfo.at(current->id()).isPlace){
+        const rx::ast::Expr *base = nullptr;
+        bool explicitDeref = false;
+        bool indexing = false;
+        if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(current)){
+            if(unary->op() != "*") break;
+            base = &unary->operand();
+            explicitDeref = true;
+        }else if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(current)){
+            base = &field->base();
+        }else if(const auto *index = dynamic_cast<const rx::ast::IndexExpr *>(current)){
+            base = &index->base();
+            indexing = true;
+        }else{
+            break;
+        }
+
+        TypeId ownerType = checker_.model_.expressionTypes.at(base->id());
+        while(true){
+            const auto &owner = checker_.model_.types.get(ownerType);
+            if(owner.kind() == TypeKind::Reference && !owner.isMutable()){
+                sharedAccess = true;
+                break;
+            }
+            if(explicitDeref || (owner.kind() != TypeKind::Reference && owner.kind() != TypeKind::Box)) break;
+            ownerType = owner.elementType();
+        }
+        if(indexing && checker_.model_.types.get(ownerType).kind() == TypeKind::Vec &&
+           !checker_.model_.expressionInfo.at(current->id()).mut){
+            sharedAccess = true;
+        }
+        current = base;
+    }
+
+    const auto &baseInfo = checker_.model_.expressionInfo.at(expression.base().id());
+    bool isMutable = (!baseInfo.isPlace || baseInfo.mut) && !sharedAccess;
+    TypeId containerType = baseType;
+    while(true){
+        const auto &container = checker_.model_.types.get(containerType);
+        if(container.kind() != TypeKind::Reference && container.kind() != TypeKind::Box) break;
+        if(container.kind() == TypeKind::Reference){
+            if(!container.isMutable()) sharedAccess = true;
+            isMutable = container.isMutable() && !sharedAccess;
+        }
+        containerType = container.elementType();
+    }
+
+    const auto &container = checker_.model_.types.get(containerType);
+    if(container.kind() != TypeKind::Array && container.kind() != TypeKind::Vec){
+        checker_.diagnose(expression.base(), "expression is not indexable");
+        return errorType;
+    }
+    checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{isMutable, true});
+    return container.elementType();
 }
 
 TypeId ExpressionCollector::collectStructExpr(const rx::ast::StructExpr &expression){
