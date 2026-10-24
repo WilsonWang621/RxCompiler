@@ -3,6 +3,7 @@
 #include "ast.hpp"
 #include "type.hpp"
 
+#include <unordered_map>
 #include <vector>
 
 class SemanticChecker;
@@ -11,6 +12,13 @@ class SemanticChecker;
 class TypesChecker{
 private:
     SemanticChecker &checker_;
+
+    // 递归重载共享单次查询的缓存，公开入口各自创建缓存。
+    bool hasCopy(TypeId type, std::unordered_map<TypeId, bool> &results) const;
+    bool hasClone(TypeId type, std::unordered_map<TypeId, bool> &results) const;
+    bool hasPartialEq(TypeId type, std::unordered_map<TypeId, bool> &results) const;
+    bool hasEq(TypeId type, std::unordered_map<TypeId, bool> &results) const;
+    bool checkStructLayout(TypeId type, std::unordered_map<TypeId, bool> &results) const;
 
 public:
     explicit TypesChecker(SemanticChecker &checker) : checker_(checker){}

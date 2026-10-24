@@ -53,9 +53,30 @@ void SemanticChecker::firstScan(const rx::ast::Crate &crate){
 void SemanticChecker::secondScan(const rx::ast::Crate &crate){
     // 建立全局作用域，依次解析声明类型、求值常量、检查结构体和函数体，最后校验 main。
     declarationCollector_.prepareGlobalScope();
+    declarationCollector_.collectDeclarationType(crate);
     for(const auto &[symbol, declaration] : model_.declarations.constants){
         constEvaluate_.evaluateConstant(symbol);
     }
+
+    for(const auto &item : crate.items()){
+        if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
+            typesChecker_.checkStructLayout(*structure);
+        }
+    }
+    for(const auto &item : crate.items()){
+        if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
+            typesChecker_.checkStructDerive(*structure);
+        }
+    }
+
+    for(const auto &item : crate.items()){
+        if(const auto *function = dynamic_cast<const rx::ast::FunctionItem *>(item.get())){
+            functionCollector_.collectFunctionBody(*function);
+        }else if(const auto *implementation = dynamic_cast<const rx::ast::ImplItem *>(item.get())){
+            functionCollector_.collectImplBodies(*implementation);
+        }
+    }
+
     checkMain(crate);
 }
 
@@ -81,14 +102,12 @@ void SemanticChecker::checkMain(const rx::ast::Crate &crate){
         diagnose(function, "main must have no generic parameters");
     }
 
-    // 签名尚未解析时，unit 也可直接从 AST 判断，避免调用未实现的类型解析器。
+    // 声明类型已统一解析，入口检查直接使用签名中的返回类型。
     const TypeId returnType = declaration->second.returnType;
-    if(returnType.value != 0){
-        const auto kind = model_.types.get(returnType).kind();
-        if(kind != TypeKind::Unit && kind != TypeKind::Error){
-            diagnose(function, "main must return unit ()");
-        }
-    }else if(function.returnType() != nullptr && dynamic_cast<const rx::ast::UnitTypeRef *>(function.returnType()) == nullptr){
+    if(returnType.value == 0) throw std::logic_error("main signature must be collected before checking entry");
+
+    const auto kind = model_.types.get(returnType).kind();
+    if(kind != TypeKind::Unit && kind != TypeKind::Error){
         diagnose(function, "main must return unit ()");
     }
 }

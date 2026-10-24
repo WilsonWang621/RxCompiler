@@ -240,3 +240,23 @@ void DeclarationCollector::collectImplTypes(const rx::ast::ImplItem &implementat
         }
     }
 }
+
+void DeclarationCollector::collectDeclarationType(const rx::ast::Crate &crate){
+    for(const auto &item : crate.items()){
+        if(const auto *function = dynamic_cast<const rx::ast::FunctionItem *>(item.get())){
+            collectFunctionSignature(*function);
+        }else if(const auto *constant = dynamic_cast<const rx::ast::ConstItem *>(item.get())){
+            collectConstantType(*constant);
+        }else if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
+            const auto symbol = checker_.model_.declaredSymbols.find(structure->id());
+            if(symbol == checker_.model_.declaredSymbols.end()) continue;
+
+            const TypeId selfType = checker_.model_.types.structure(symbol->second);
+            for(const auto &field : structure->fields()){
+                collectStructField(*field, selfType);
+            }
+        }else if(const auto *implementation = dynamic_cast<const rx::ast::ImplItem *>(item.get())){
+            collectImplTypes(*implementation);
+        }
+    }
+}

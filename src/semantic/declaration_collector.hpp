@@ -17,6 +17,7 @@ public:
 
     // 第二次扫描先解析全部声明类型，再检查初始化式和函数体，支持前向调用。
     void prepareGlobalScope();
+
     void collectFunction(const rx::ast::FunctionItem &function);
     void collectConstant(const rx::ast::ConstItem &constant);
     void collectStruct(const rx::ast::StructItem &structure);
@@ -25,4 +26,6 @@ public:
     void collectConstantType(const rx::ast::ConstItem &constant, std::optional<TypeId> selfType = std::nullopt);
     void collectStructField(const rx::ast::StructField &field, TypeId selfType);
     void collectImplTypes(const rx::ast::ImplItem &implementation);
+
+    void collectDeclarationType(const rx::ast::Crate &crate);
 };
