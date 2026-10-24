@@ -31,6 +31,19 @@ TypeId ExpressionCollector::collectUnaryExpr(const rx::ast::UnaryExpr &expressio
 
 TypeId ExpressionCollector::collectCast(const rx::ast::CastExpr &expression){
     // 解析目标类型，检查源类型是否允许显式 as 转换，并返回目标类型。
+    TypeId source = collectExpr(expression.value());
+    TypeId target = checker_.resolution_.resolveType(expression.type());
+
+    TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
+    if(source == errorType || target == errorType){
+        return errorType;
+    }
+
+    if(!checker_.typesChecker_.canCast(source, target)){
+        checker_.diagnose(expression, "invalid cast");
+        return errorType;
+    }
+    return target;
 }
 
 TypeId ExpressionCollector::collectAssignment(const rx::ast::AssignExpr &assignment){
@@ -71,4 +84,19 @@ TypeId ExpressionCollector::collectMethodCall(const rx::ast::MethodCallExpr &exp
 
 bool ExpressionCollector::checkMutablePlace(const rx::ast::Expr &expression){
     // 查询表达式 place 信息，诊断不可赋值或不可变目标，并报告是否允许写入。
+    const auto type = checker_.model_.expressionTypes.find(expression.id());
+    if(type != checker_.model_.expressionTypes.end() && type->second == checker_.model_.types.builtin(TypeKind::Error)){
+        return false;
+    }
+
+    const auto info = checker_.model_.expressionInfo.find(expression.id());
+    if(info == checker_.model_.expressionInfo.end() || !info->second.isPlace){
+        checker_.diagnose(expression, "expression is not an assignable place");
+        return false;
+    }
+    if(!info->second.mut){
+        checker_.diagnose(expression, "cannot modify an immutable place");
+        return false;
+    }
+    return true;
 }
