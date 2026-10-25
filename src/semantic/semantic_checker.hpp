@@ -31,8 +31,8 @@ private:
     SemanticModel model_;
     Scope scope_;
     std::unordered_map<std::string, SymbolId> builtinSymbols_;
-    std::optional<TypeId> currentReturnType_;
-    std::optional<TypeId> currentSelfType_;
+    std::optional<TypeId> currentReturnType_;     //当前函数声明的返回类型，collectReturn 用它检查 return 的值是否兼容
+    std::optional<TypeId> currentSelfType_;      //当前环境中 Self 代表的具体类型。类型解析和路径解析用它处理
     enum class ConstantState{ Evaluating, Complete, Failed };
     // 表中不存在的符号尚未开始求值。
     std::unordered_map<SymbolId, ConstantState> constantStates_;
