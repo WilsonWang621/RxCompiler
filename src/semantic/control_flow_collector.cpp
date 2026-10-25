@@ -11,7 +11,7 @@ TypeId ControlFlowCollector::collectIf(const rx::ast::IfExpr &ifstmt, std::optio
 
     const TypeId condition = checker_.expressionCollector_.collectExpr(ifstmt.condition(), checker_.model_.types.builtin(TypeKind::Bool));
     const std::optional<TypeId> branchExpected = ifstmt.elseBranch() != nullptr ? expectedType : unitType;
-    const TypeId thenType = checker_.expressionCollector_.collectExpr(ifstmt.thenBranch(), expectedType);
+    const TypeId thenType = checker_.expressionCollector_.collectExpr(ifstmt.thenBranch(), branchExpected);
     //没有else默认else分支返回的是unit()
     TypeId elseType = unitType;
     if(ifstmt.elseBranch() != nullptr){
