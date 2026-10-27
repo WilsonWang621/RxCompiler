@@ -35,6 +35,7 @@ FetchContent_MakeAvailable(antlr4_runtime)
 
 add_executable(compiler
     src/main.cpp
+    src/driver.cpp
     src/ast/ast.cpp
     src/frontend/ast_builder.cpp
     src/semantic/semantic_checker.cpp
@@ -46,6 +47,12 @@ add_executable(compiler
     src/semantic/expression_collector.cpp
     src/semantic/control_flow_collector.cpp
     src/semantic/types_checker.cpp
+    src/ir/module.cpp
+    src/ir/ir_builder.cpp
+    src/ir/ir_generator.cpp
+    src/ir/generation_context.cpp
+    src/ir/declaration_generator.cpp
+    src/ir/function_generator.cpp
     generated/Lexer.cpp
     generated/Parser.cpp
     generated/ParserBaseVisitor.cpp
@@ -57,6 +64,7 @@ target_include_directories(compiler PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/ast
     ${CMAKE_CURRENT_SOURCE_DIR}/src/frontend
     ${CMAKE_CURRENT_SOURCE_DIR}/src/semantic
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/ir
     ${CMAKE_CURRENT_SOURCE_DIR}/generated
     ${antlr4_runtime_SOURCE_DIR}/runtime/src
 )
