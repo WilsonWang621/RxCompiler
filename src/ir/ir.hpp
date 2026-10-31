@@ -19,7 +19,7 @@ struct IRValue{
 
 struct IRParameter{
     IRType type = IRType::I32;
-    std::string name; // 登记时生成 p0/p1 等 SSA 名，避免与临时值 vN 重名。
+    std::string name; 
 };
 
 struct IRStruct{
@@ -52,4 +52,5 @@ struct IRFunction{
     std::vector<std::unique_ptr<IRBasicBlock>> blocks; // 首块为入口。
     std::vector<IRParameter> parameters; // self 存在时位于第一个参数。
     bool isDeclaration = false; // 声明没有块；beginFunction 开始生成定义。
+    bool isBuiltin = false; // 内置 I/O 声明在输出时附带运行时定义。
 };

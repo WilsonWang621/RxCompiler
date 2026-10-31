@@ -3,6 +3,23 @@
 #include <stdexcept>
 #include <utility>
 
+void IRGenerator::declareBuiltins(){
+    const auto &model = *context_.model;
+    // 内置类型也属于 Builtin，只登记三个有运行时实现的 I/O 函数。
+    for(const char *name : {"get_i32", "print_i32", "println_i32"}){
+        for(const auto &[symbol, info] : model.symbols){
+            if(info.kind != SymbolKind::Builtin || info.name != name) continue;
+            const bool input = info.name == "get_i32";
+            std::vector<IRParameter> parameters;
+            if(!input) parameters.push_back({IRType::I32, "p0"});
+            auto &function = context_.builder.declareFunction(info.name, input ? IRType::I32 : IRType::Void, std::move(parameters), false);
+            function.isBuiltin = true;
+            context_.functions.emplace(symbol, &function);
+            break;
+        }
+    }
+}
+
 void IRGenerator::declareItem(const rx::ast::Item &item){
     if(const auto *constant = dynamic_cast<const rx::ast::ConstItem *>(&item)){
         declareConstant(*constant);

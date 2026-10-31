@@ -102,6 +102,16 @@ void IRBuilder::createStore(IRValue value, IRValue address){
     append({IROpcode::Store, {}, {std::move(value), std::move(address)}, {}});
 }
 
+IRValue IRBuilder::createLoad(IRType type, IRValue address){
+    if(type == IRType::Void || address.type != IRType::Ptr || address.name.empty()){
+        throw std::invalid_argument("load requires a value type and a local pointer");
+    }
+    IRValue result{type, "v" + std::to_string(nextValueId_), 0};
+    append({IROpcode::Load, result, {std::move(address)}, {}});
+    ++nextValueId_;
+    return result;
+}
+
 std::optional<IRValue> IRBuilder::createCall(const IRFunction &callee, std::vector<IRValue> arguments){
     if(!ownsFunction(callee)) throw std::invalid_argument("callee does not belong to the current module");
     if(arguments.size() != callee.parameters.size()) throw std::invalid_argument("call argument count does not match");

@@ -53,6 +53,7 @@ add_executable(compiler
     src/ir/generation_context.cpp
     src/ir/declaration_generator.cpp
     src/ir/function_generator.cpp
+    src/ir/statement_generator.cpp
     generated/Lexer.cpp
     generated/Parser.cpp
     generated/ParserBaseVisitor.cpp

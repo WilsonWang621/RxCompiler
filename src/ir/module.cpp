@@ -58,6 +58,25 @@ void printName(std::ostream &out, const std::string &name, char prefix = '\0'){
     out << '"';
 }
 
+void printBuiltin(std::ostream &out, const IRFunction &function){
+    // 与 crates/rx/src/core.rs 相同，使用 REIMU 的 C I/O 接口。
+    if(function.name == "get_i32"){
+        out << "define i32 @get_i32() {\nentry:\n"
+            << "  %value = alloca i32, align 4\n"
+            << "  store i32 0, ptr %value, align 4\n"
+            << "  %status = call i32 (ptr, ...) @scanf(ptr @rx.io.format, ptr %value)\n"
+            << "  %result = load i32, ptr %value, align 4\n"
+            << "  ret i32 %result\n}\n\n";
+    }else if(function.name == "print_i32" || function.name == "println_i32"){
+        out << "define void @" << function.name << "(i32 %value) {\nentry:\n"
+            << "  %status = call i32 (ptr, ...) @printf(ptr @"
+            << (function.name == "print_i32" ? "rx.io.format" : "rx.io.line") << ", i32 %value)\n"
+            << "  ret void\n}\n\n";
+    }else{
+        throw std::logic_error("unknown IR builtin function");
+    }
+}
+
 }
 
 void IRModule::dump(std::ostream &out, int indent) const{
@@ -81,6 +100,11 @@ void IRModule::dump(std::ostream &out, int indent) const{
     };
     out << "target datalayout = \"e-m:e-p:32:32-i64:64-n32-S128\"\n"
         << "target triple = \"riscv32-unknown-none-elf\"\n\n";
+    if(std::any_of(functions_.begin(), functions_.end(), [](const auto &function){ return function->isBuiltin; })){
+        out << "@rx.io.format = private unnamed_addr constant [3 x i8] c\"%d\\00\"\n"
+            << "@rx.io.line = private unnamed_addr constant [4 x i8] c\"%d\\0A\\00\"\n"
+            << "declare i32 @printf(ptr, ...)\ndeclare i32 @scanf(ptr, ...)\n\n";
+    }
     for(const auto &structure : structs_){
         out << pad;
         printName(out, structure->name, '%');
@@ -93,6 +117,10 @@ void IRModule::dump(std::ostream &out, int indent) const{
     }
     if(!structs_.empty()) out << '\n';
     for(const auto &function : functions_){
+        if(function->isBuiltin){
+            printBuiltin(out, *function);
+            continue;
+        }
         if(function->isDeclaration && (function->isInternal || !function->blocks.empty())){
             throw std::logic_error("IR declaration must be external and have no body");
         }

@@ -23,6 +23,7 @@ IRModule IRGenerator::generate(const rx::ast::Crate &crate, const SemanticModel 
     IRModule module;
     context_.reset(module, model);
     try{
+        declareBuiltins();
         for(const auto &item : crate.items()){
             declareItem(*item);
         }
