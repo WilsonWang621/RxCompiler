@@ -54,6 +54,8 @@ add_executable(compiler
     src/ir/declaration_generator.cpp
     src/ir/function_generator.cpp
     src/ir/statement_generator.cpp
+    src/ir/expression_generator.cpp
+    src/ir/control_flow_generator.cpp
     generated/Lexer.cpp
     generated/Parser.cpp
     generated/ParserBaseVisitor.cpp
