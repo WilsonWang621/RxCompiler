@@ -15,6 +15,19 @@ const char *typeName(IRType type){
     throw std::logic_error("unknown IR type");
 }
 
+const char *binaryName(IROpcode opcode){
+    switch(opcode){
+        case IROpcode::Add: return "add";
+        case IROpcode::Sub: return "sub";
+        case IROpcode::Mul: return "mul";
+        case IROpcode::SDiv: return "sdiv";
+        case IROpcode::UDiv: return "udiv";
+        case IROpcode::SRem: return "srem";
+        case IROpcode::URem: return "urem";
+        default: throw std::logic_error("unknown IR binary opcode");
+    }
+}
+
 const char *predicateName(IRComparePredicate predicate){
     switch(predicate){
         case IRComparePredicate::Eq: return "eq";
@@ -170,7 +183,10 @@ void IRModule::dump(std::ostream &out, int indent) const{
                         out << ", align " << alignment(instruction.operands.at(0).type);
                         break;
                     case IROpcode::Add: case IROpcode::Sub:
-                        out << (instruction.opcode == IROpcode::Add ? "add " : "sub ");
+                    case IROpcode::Mul:
+                    case IROpcode::SDiv: case IROpcode::UDiv:
+                    case IROpcode::SRem: case IROpcode::URem:
+                        out << binaryName(instruction.opcode) << ' ';
                         printTypedValue(instruction.operands.at(0));
                         out << ", ";
                         printValue(instruction.operands.at(1));
