@@ -17,22 +17,18 @@ private:
     void declareFunction(const rx::ast::FunctionItem &function);
     std::string mangleSymbol(SymbolId symbol, const SemanticModel &model) const;
 
-    // function_generator.cpp：绑定参数、生成函数体和入口包装器。
-    // self 在首位；为入参建栈槽，mut 参数修改栈槽，不改写 SSA 入参。
-    void bindParameters(const rx::ast::FunctionItem &function);
-    // 进入函数清空 locals；块已终结则结束，否则返回尾值或 unit。
-    void generateFunction(const rx::ast::FunctionItem &function);
+    // function generator
+    void bindParameters(const rx::ast::FunctionItem &function); // self 在首位；为入参建栈槽，mut 参数修改栈槽，不改写 SSA 入参。
+    void generateFunction(const rx::ast::FunctionItem &function);  // 进入函数清空 locals；块已终结则结束，否则返回尾值或 unit。
     void generateMainWrapper();
 
-    // statement_generator.cpp：局部声明、语句序列和块尾值。
+    // statement_generator
     void generateLet(const rx::ast::LetStmt &stmt);
     IRExprResult generateStmt(const rx::ast::Stmt &stmt);
-    // 语句依次执行；终结后停止；尾表达式的值交给 generateFunction。
-    IRExprResult generateBlock(const rx::ast::BlockExpr &block);
+    IRExprResult generateBlock(const rx::ast::BlockExpr &block); // 语句依次执行；终结后停止；尾表达式的值交给 generateExpr。
 
-    // expression_generator.cpp：表达式分派、取值与取地址。
+    // expression_generator
     IRExprResult generateExpr(const rx::ast::Expr &expression);
-    // 地址只求一次；nullopt 表示地址计算过程中当前块已经终结。
     std::optional<IRPlace> generatePlace(const rx::ast::Expr &expression);
     std::optional<IRPlace> generateFieldPlace(const rx::ast::FieldExpr &expression);
     IRExprResult generatePath(const rx::ast::PathExpr &expression);

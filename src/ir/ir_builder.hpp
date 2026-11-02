@@ -7,7 +7,7 @@ private:
     IRModule *module_ = nullptr;
     IRFunction *function_ = nullptr;
     IRBasicBlock *block_ = nullptr;
-    unsigned nextValueId_ = 0;
+    unsigned nextValueId_ = 0;   // IR 临时值的编号计数器，用来生成 v0、v1、v2，保证不重名
     bool ownsFunction(const IRFunction &function) const;   //判断 function 是否属于当前 Builder的IRModule
     void append(IRInstruction instruction);
 
@@ -23,9 +23,9 @@ public:
     bool isTerminated() const; // 查询当前块；未设置插入位置时抛出异常。
 
     IRValue createAlloca(IRType type); // I1/I32/Ptr 的栈槽，返回 Ptr。
-    IRValue createLoad(IRType type, IRValue address); // opaque ptr 需要显式给出加载类型。
+    IRValue createLoad(IRType type, IRValue address);
     void createStore(IRValue value, IRValue address); // 按 value.type 写入。
-    IRValue createBinary(IROpcode opcode, IRValue left, IRValue right); // Add/Sub，结果为 I32。
+    IRValue createBinary(IROpcode opcode, IRValue left, IRValue right); 
     IRValue createCompare(IRComparePredicate predicate, IRValue left, IRValue right); // 结果为 I1。
     IRValue createFieldAddress(const IRStruct &structure, IRValue address, std::size_t fieldIndex);
     // arguments 包含 self；无返回值为 nullopt，否则创建并返回一个 SSA 结果。

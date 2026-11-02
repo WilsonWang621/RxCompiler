@@ -8,7 +8,7 @@
 #include <vector>
 
 enum class IRType{ Void, I32, Ptr, I1 };
-enum class IROpcode{ Alloca, Store, Call, Ret, Load, Add, Sub, ICmp, GetElementPtr };
+enum class IROpcode{ Alloca, Store, Call, Ret, Load, Add, Sub, Mul, UDiv, SDiv, URem, SRem, ICmp, GetElementPtr };
 enum class IRComparePredicate{ Eq, Ne, Sgt, Sge, Slt, Sle, Ugt, Uge, Ult, Ule };
 
 struct IRValue{
@@ -30,8 +30,6 @@ struct IRStruct{
 struct IRInstruction{
     IROpcode opcode = IROpcode::Ret;
     std::optional<IRValue> result; // 非 void 调用始终有结果，调用方可丢弃该值。
-    // load: 地址；store: 值、地址；add/sub/icmp: 左、右操作数；
-    // GEP: 基地址；call: 完整实参列表；ret: 空或返回值；alloca: 空。
     std::vector<IRValue> operands;
     std::string callee; // 仅 call 使用，不带 @；返回类型由 result 决定。
     IRType allocatedType = IRType::I32; // 仅 alloca 使用，结果类型为 Ptr。

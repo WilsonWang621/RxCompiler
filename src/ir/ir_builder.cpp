@@ -68,8 +68,7 @@ IRBasicBlock &IRBuilder::createBlock(IRFunction &function, std::string name){
 
 void IRBuilder::setInsertPoint(IRBasicBlock &block){
     if(!function_) throw std::logic_error("IRBuilder has no function");
-    const auto found = std::find_if(function_->blocks.begin(), function_->blocks.end(),
-        [&](const auto &candidate){ return candidate.get() == &block; });
+    const auto found = std::find_if(function_->blocks.begin(), function_->blocks.end(), [&](const auto &candidate){ return candidate.get() == &block;});
     if(found == function_->blocks.end()) throw std::invalid_argument("block does not belong to the current function");
     block_ = &block;
 }
@@ -135,4 +134,35 @@ void IRBuilder::createReturn(std::optional<IRValue> value){
     IRInstruction instruction{IROpcode::Ret, {}, {}, {}};
     if(value) instruction.operands.push_back(*value);
     append(std::move(instruction));
+}
+
+IRValue IRBuilder::createBinary(IROpcode opcode, IRValue left, IRValue right){
+    switch(opcode){
+        case IROpcode::Add:
+        case IROpcode::Sub:
+        case IROpcode::Mul:
+        case IROpcode::SDiv:
+        case IROpcode::UDiv:
+        case IROpcode::SRem:
+        case IROpcode::URem:
+            break;
+        default: throw std::invalid_argument("invalid binary opcode");
+    }
+
+    if(left.type != IRType::I32 || right.type != IRType::I32) throw std::invalid_argument("operands type must be I32");
+
+    IRValue result{IRType::I32, "v" + std::to_string(nextValueId_++), 0};
+    append({opcode, result, {std::move(left), std::move(right)}, {}});
+    return result;
+}
+
+IRValue IRBuilder::createCompare(IRComparePredicate predicate, IRValue left, IRValue right){
+    if(left.type != right.type || (left.type != IRType::I32 && left.type != IRType::I1)){
+        throw std::invalid_argument("comparison requires matching integer operands");
+    }
+    IRValue result{IRType::I1, "v" + std::to_string(nextValueId_++), 0};
+    IRInstruction instruction{IROpcode::ICmp, result, {std::move(left), std::move(right)}, {}};
+    instruction.predicate = predicate;
+    append(instruction);
+    return result;
 }
