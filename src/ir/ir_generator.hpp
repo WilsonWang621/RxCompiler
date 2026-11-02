@@ -29,7 +29,7 @@ private:
 
     // expression_generator
     IRExprResult generateExpr(const rx::ast::Expr &expression);
-    std::optional<IRPlace> generatePlace(const rx::ast::Expr &expression);
+    std::optional<IRPlace> generatePlace(const rx::ast::Expr &expression);  //找到存储地址
     std::optional<IRPlace> generateFieldPlace(const rx::ast::FieldExpr &expression);
     IRExprResult generatePath(const rx::ast::PathExpr &expression);
     IRExprResult generateBinary(const rx::ast::BinaryExpr &expression);

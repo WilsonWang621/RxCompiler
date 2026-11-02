@@ -24,6 +24,12 @@ const char *binaryName(IROpcode opcode){
         case IROpcode::UDiv: return "udiv";
         case IROpcode::SRem: return "srem";
         case IROpcode::URem: return "urem";
+        case IROpcode::And: return "and";
+        case IROpcode::Or: return "or";
+        case IROpcode::Xor: return "xor";
+        case IROpcode::Shl: return "shl";
+        case IROpcode::LShr: return "lshr";
+        case IROpcode::AShr: return "ashr";
         default: throw std::logic_error("unknown IR binary opcode");
     }
 }
@@ -186,6 +192,8 @@ void IRModule::dump(std::ostream &out, int indent) const{
                     case IROpcode::Mul:
                     case IROpcode::SDiv: case IROpcode::UDiv:
                     case IROpcode::SRem: case IROpcode::URem:
+                    case IROpcode::And: case IROpcode::Or: case IROpcode::Xor:
+                    case IROpcode::Shl: case IROpcode::LShr: case IROpcode::AShr:
                         out << binaryName(instruction.opcode) << ' ';
                         printTypedValue(instruction.operands.at(0));
                         out << ", ";

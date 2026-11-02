@@ -24,7 +24,9 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
             return {value, false};
         }
     }
-    if(const auto *binary = dynamic_cast<const rx::ast::BinaryExpr *>(& expression)) return generateBinary(*binary);
+    if(const auto *binary = dynamic_cast<const rx::ast::BinaryExpr *>(&expression)) return generateBinary(*binary);
+    if(const auto *assignment = dynamic_cast<const rx::ast::AssignExpr *>(&expression)) return generateAssignment(*assignment);
+    if(const auto *compoundAssignment = dynamic_cast<const rx::ast::CompoundAssignExpr *>(&expression)) return generateCompoundAssignment(*compoundAssignment);
     throw std::runtime_error("IR expression is not implemented");
 }
 
@@ -118,5 +120,75 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
     }
 
     return {context_.builder.createCompare(predicate, *left.value, *right.value), false};
+}
 
+std::optional<IRPlace> IRGenerator::generatePlace(const rx::ast::Expr &expression){
+    const SymbolId symbol = context_.model->resolvedSymbols.at(expression.id());
+    return IRPlace{
+        context_.locals.at(symbol),
+        context_.model->symbolTypes.at(symbol)
+    };
+}
+
+IRExprResult IRGenerator::generateAssignment(const rx::ast::AssignExpr &expression){
+    const auto value = generateExpr(expression.value());
+    if(value.terminated) return value;
+
+    const auto place = generatePlace(expression.target());
+    if(!place) return {{}, true};
+
+    if(!value.value){
+        throw std::runtime_error("IR assignment requires a value");
+    }
+    const IRType type = context_.typeLowering.lowerType(place->type, *context_.model);
+    if(value.value->type != type) throw std::runtime_error("IR assignment value type does not match target");
+
+    context_.builder.createStore(*value.value, place->address);
+    return {};
+}
+
+IRExprResult IRGenerator::generateCompoundAssignment(const rx::ast::CompoundAssignExpr &expression){
+    const auto value = generateExpr(expression.value());
+    if(value.terminated) return value;
+
+    const auto place = generatePlace(expression.target());
+    if(!place) return {{}, true};
+
+    if(!value.value){
+        throw std::runtime_error("IR compound assignment requires a value");
+    }
+
+    const auto &model = *context_.model;
+    const auto &target = model.types.get(place->type);
+    const IRType type = context_.typeLowering.lowerType(place->type, model);
+    IRValue right = *value.value;
+    const auto &rightInfo = model.types.get(model.expressionTypes.at(expression.value().id()));
+    // 复合赋值的右侧允许一层共享引用，先读取其指向的标量。
+    if(rightInfo.kind() == TypeKind::Reference && !rightInfo.isMutable()){
+        right = context_.builder.createLoad(context_.typeLowering.lowerType(rightInfo.elementType(), model), right);
+    }
+    if(right.type != type) throw std::runtime_error("IR compound assignment value type does not match target");
+
+    const std::string &op = expression.op();
+    IROpcode opcode;
+    if(op == "+=") opcode = IROpcode::Add;
+    else if(op == "-=") opcode = IROpcode::Sub;
+    else if(op == "*=") opcode = IROpcode::Mul;
+    else if(op == "/=") opcode = target.isSignedInteger() ? IROpcode::SDiv : IROpcode::UDiv;
+    else if(op == "%=") opcode = target.isSignedInteger() ? IROpcode::SRem : IROpcode::URem;
+    else if(op == "&=") opcode = IROpcode::And;
+    else if(op == "|=") opcode = IROpcode::Or;
+    else if(op == "^=") opcode = IROpcode::Xor;
+    else if(op == "<<=") opcode = IROpcode::Shl;
+    else if(op == ">>=") opcode = target.isSignedInteger() ? IROpcode::AShr : IROpcode::LShr;
+    else throw std::runtime_error("IR compound assignment operator is not implemented: " + op);
+
+    // Rx 的 32 位移位只使用移位量的低 5 位。
+    if(op == "<<=" || op == ">>="){
+        right = context_.builder.createBinary(IROpcode::And, right, IRValue{IRType::I32, "", 31});
+    }
+    IRValue old = context_.builder.createLoad(type, place->address);
+    const auto result = context_.builder.createBinary(opcode, old, right);
+    context_.builder.createStore(result, place->address);
+    return {};
 }

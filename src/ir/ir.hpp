@@ -8,12 +8,12 @@
 #include <vector>
 
 enum class IRType{ Void, I32, Ptr, I1 };
-enum class IROpcode{ Alloca, Store, Call, Ret, Load, Add, Sub, Mul, UDiv, SDiv, URem, SRem, ICmp, GetElementPtr };
+enum class IROpcode{ Alloca, Store, Call, Ret, Load, Add, Sub, Mul, UDiv, SDiv, URem, SRem, And, Or, Xor, Shl, LShr, AShr, ICmp, GetElementPtr };
 enum class IRComparePredicate{ Eq, Ne, Sgt, Sge, Slt, Sle, Ugt, Uge, Ult, Ule };
 
 struct IRValue{
     IRType type = IRType::I32;
-    std::string name; // 非空表示局部 IR 值，不带 %；为空时使用 bits。
+    std::string name; // 非空表示局部 IR 值，不带 %；为空时使用 bits,代表是常数。
     std::uint32_t bits = 0; // 整数保存补码位模式，I1 只能是 0 或 1。
 };
 

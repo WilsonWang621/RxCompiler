@@ -145,13 +145,22 @@ IRValue IRBuilder::createBinary(IROpcode opcode, IRValue left, IRValue right){
         case IROpcode::UDiv:
         case IROpcode::SRem:
         case IROpcode::URem:
+        case IROpcode::Shl:
+        case IROpcode::LShr:
+        case IROpcode::AShr:
+        case IROpcode::And:
+        case IROpcode::Or:
+        case IROpcode::Xor:
             break;
         default: throw std::invalid_argument("invalid binary opcode");
     }
 
-    if(left.type != IRType::I32 || right.type != IRType::I32) throw std::invalid_argument("operands type must be I32");
+    const bool bitwise = opcode == IROpcode::And || opcode == IROpcode::Or || opcode == IROpcode::Xor;
+    if(left.type != right.type || (left.type != IRType::I32 && !(bitwise && left.type == IRType::I1))){
+        throw std::invalid_argument("binary operands must have matching supported integer types");
+    }
 
-    IRValue result{IRType::I32, "v" + std::to_string(nextValueId_++), 0};
+    IRValue result{left.type, "v" + std::to_string(nextValueId_++), 0};
     append({opcode, result, {std::move(left), std::move(right)}, {}});
     return result;
 }
