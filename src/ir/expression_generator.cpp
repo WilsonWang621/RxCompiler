@@ -14,19 +14,10 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
         return {IRValue{context_.typeLowering.lowerType(constant->second.type, model), "", constant->second.bits}, false};
     }
     if(const auto *path = dynamic_cast<const rx::ast::PathExpr *>(&expression)) return generatePath(*path);
-    if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(&expression)){
-        // 字面量的负号由位模式求值，包含 i32::MIN；不解析字面量文本。
-        const auto operand = generateExpr(unary->operand());
-        if(operand.terminated) return operand;
-        if(unary->op() == "-" && operand.value && operand.value->name.empty()){
-            auto value = *operand.value;
-            value.bits = 0u - value.bits;
-            return {value, false};
-        }
-    }
     if(const auto *binary = dynamic_cast<const rx::ast::BinaryExpr *>(&expression)) return generateBinary(*binary);
     if(const auto *assignment = dynamic_cast<const rx::ast::AssignExpr *>(&expression)) return generateAssignment(*assignment);
     if(const auto *compoundAssignment = dynamic_cast<const rx::ast::CompoundAssignExpr *>(&expression)) return generateCompoundAssignment(*compoundAssignment);
+    if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(&expression)) return generateUnary(*unary);
     throw std::runtime_error("IR expression is not implemented");
 }
 
@@ -123,16 +114,35 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
 }
 
 std::optional<IRPlace> IRGenerator::generatePlace(const rx::ast::Expr &expression){
-    const SymbolId symbol = context_.model->resolvedSymbols.at(expression.id());
-    return IRPlace{
-        context_.locals.at(symbol),
-        context_.model->symbolTypes.at(symbol)
-    };
+    const auto model = context_.model;
+    if(const auto *path = dynamic_cast<const rx::ast::PathExpr *>(&expression)){
+        const SymbolId symbol = model->resolvedSymbols.at(path->id());
+        return IRPlace{
+            context_.locals.at(symbol),
+            model->symbolTypes.at(symbol)
+        };
+    }
+
+    if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(&expression)){
+        if(unary->op() == "*"){
+            const auto pointer = generateExpr(unary->operand());
+            if(pointer.terminated) return std::nullopt;
+
+            if(!pointer.value || pointer.value->type != IRType::Ptr){
+                throw std::runtime_error("IR dereference requires a pointer");
+            }
+            return IRPlace{
+                *pointer.value,
+                model->expressionTypes.at(expression.id())
+            };
+        }
+    }
+    throw std::runtime_error("IR place expression is not implemented");
 }
 
 IRExprResult IRGenerator::generateAssignment(const rx::ast::AssignExpr &expression){
     const auto value = generateExpr(expression.value());
-    if(value.terminated) return value;
+    if(value.terminated) return value;  //如果生成右侧时已经终结当前基本块，就直接返回，不能继续生成赋值指令 eg. return
 
     const auto place = generatePlace(expression.target());
     if(!place) return {{}, true};
@@ -191,4 +201,83 @@ IRExprResult IRGenerator::generateCompoundAssignment(const rx::ast::CompoundAssi
     const auto result = context_.builder.createBinary(opcode, old, right);
     context_.builder.createStore(result, place->address);
     return {};
+}
+
+IRExprResult IRGenerator::generateUnary(const rx::ast::UnaryExpr &expression){
+    const auto &model = *context_.model;
+    const std::string op = expression.op();
+    const auto &operand = expression.operand();
+
+    if(op == "&" || op == "&mut"){
+        const auto &info = model.expressionInfo.at(operand.id());
+        if(info.isPlace){
+            const auto place = generatePlace(operand);
+            if(!place) return {{}, true};
+            return {place->address, false};
+        }
+
+        const auto value = generateExpr(operand);
+        if(value.terminated) return value;
+        if(!value.value){
+            throw std::runtime_error("IR borrowing this value is not supported");
+        }
+
+        const auto address = context_.builder.createAlloca(value.value->type);
+        context_.builder.createStore(*value.value, address);
+        return {address, false};
+    }
+
+    if(op == "*"){
+        const auto place = generatePlace(expression);
+        if(!place) return {{}, true};
+
+        const IRType type = context_.typeLowering.lowerType(place->type, model);
+        if(type == IRType::Void) return {};
+
+        return{
+            context_.builder.createLoad(type, place->address),
+            false
+        };
+    }
+
+    const auto value = generateExpr(operand);
+    if(value.terminated) return value;
+    if(!value.value){
+        throw std::runtime_error("IR unary operand requires a value");
+    }
+
+    IRValue scalar = *value.value;
+    const auto &operandType = model.types.get(model.expressionTypes.at(operand.id()));
+
+    if(operandType.kind() == TypeKind::Reference && !operandType.isMutable()){
+        const IRType type = context_.typeLowering.lowerType(operandType.elementType(), model);
+        scalar = context_.builder.createLoad(type, scalar);
+    }
+
+    if(op == "-"){
+        return {
+            context_.builder.createBinary(
+                IROpcode::Sub,
+                IRValue{IRType::I32, "", 0},
+                scalar
+            ),
+            false
+        };
+    }
+
+    if(op == "!"){
+        const std::uint32_t mask =
+            scalar.type == IRType::I1 ? 1u : 0xffffffffu;
+
+        return {
+            context_.builder.createBinary(
+                IROpcode::Xor,
+                scalar,
+                IRValue{scalar.type, "", mask}
+            ),
+            false
+        };
+    }
+
+    throw std::runtime_error("IR unary operator is not implemented: " + op);
 }

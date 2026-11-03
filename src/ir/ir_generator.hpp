@@ -39,6 +39,7 @@ private:
     // 两种赋值均为：右侧 -> 目标地址 -> 读取/更新，目标地址只计算一次。
     IRExprResult generateAssignment(const rx::ast::AssignExpr &expression);
     IRExprResult generateCompoundAssignment(const rx::ast::CompoundAssignExpr &expression);
+    IRExprResult generateUnary(const rx::ast::UnaryExpr &expression);
 
     // control_flow_generator.cpp：控制流表达式。
     IRExprResult generateReturn(const rx::ast::ReturnExpr &expression);
