@@ -11,8 +11,8 @@
 struct Scope{
 private:
     enum class Namespace{
-        Value,
-        Type
+        Value, //变量、参数、函数、常量等值名字
+        Type   //结构体、内建类型等类型名字
     };
 
     struct Binding{
@@ -27,21 +27,22 @@ private:
 
     using Bindings = std::unordered_map<std::string, std::vector<Binding>>;
 
-    // 每个名字独立维护绑定栈，栈顶就是当前可见的符号。
-    //名字 -> 这个名字从外到内的所有绑定
+    // 每个名字独立维护绑定栈，栈顶就是当前可见的符号。 名字 -> 这个名字从外到内的所有绑定
+    // 两张表来分别管理
     Bindings values_;
     Bindings types_;
-    // 每一层只记录自己引入的绑定；同层遮蔽也逐次记录。
-    // 作用域深度 -> 这一层引入了哪些绑定
+
+    // 用于每一层只记录自己引入的绑定；同层遮蔽也逐次记录。
+    // 作用域深度 -> 这一层引入了哪些绑定 （这一层向哪个空间的栈里压入过绑定？）
     std::vector<std::vector<UndoEntry>> scopes_;
 
-    static std::optional<SymbolId> lookup(const Bindings &bindings, const std::string &name){
+    static std::optional<SymbolId> lookup(const Bindings &bindings, const std::string &name){  //只要表里有就返回，不管是否在当前层
         auto it = bindings.find(name);
         if(it == bindings.end()) return std::nullopt;
         return it->second.back().symbol;
     }
 
-    std::optional<SymbolId> lookupCurrent(const Bindings &bindings, const std::string &name) const {
+    std::optional<SymbolId> lookupCurrent(const Bindings &bindings, const std::string &name) const {   //必须是当前层有才返回
         auto it = bindings.find(name);
         if(it == bindings.end() || it->second.back().depth != depth()){
             return std::nullopt;
@@ -49,7 +50,7 @@ private:
         return it->second.back().symbol;
     }
 
-    bool declare(Bindings &bindings, Namespace nameSpace, const std::string &name, SymbolId symbol, bool allowShadowing){
+    bool declare(Bindings &bindings, Namespace nameSpace, const std::string &name, SymbolId symbol, bool allowShadowing){ //检查重名和同步更新绑定和日志
         //拒绝非法输入
         if(name.empty() || symbol.value == 0) return false;
 
@@ -78,12 +79,11 @@ public:
 
     std::size_t depth() const { return scopes_.size() - 1; }
 
-    void pushScope(){
+    void pushScope(){ //建立一层新的作用域
         scopes_.emplace_back();
     }
 
-    // 全局层不能弹出；成功退出时返回 true。
-    bool popScope(){
+    bool popScope(){ // 全局顶层永远不能弹出；成功退出时返回 true。
         if(scopes_.size() == 1) return false;
         //逆序遍历当前层的撤销日志
         for(auto it = scopes_.back().rbegin(); it != scopes_.back().rend(); ++it){

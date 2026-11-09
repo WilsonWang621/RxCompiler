@@ -24,9 +24,9 @@ public:
     explicit TypesChecker(SemanticChecker &checker) : checker_(checker){}
 
     // 类型相等、隐式转换与 as 转换是不同规则；合并类型时保留所有先前结果。
-    bool canCoerce(TypeId source, TypeId target) const;
-    bool canCast(TypeId source, TypeId target) const;
-    TypeId collectCommonType(const std::vector<TypeId> &types, const rx::ast::ASTNode &node);
+    bool canCoerce(TypeId source, TypeId target) const; //判断能否进行隐式转换
+    bool canCast(TypeId source, TypeId target) const;  //判断 as 显式转换是否合法
+    TypeId collectCommonType(const std::vector<TypeId> &types, const rx::ast::ASTNode &node); //要把多个结果合成一个类型
     bool hasCopy(TypeId type) const;
     bool hasClone(TypeId type) const;
     bool hasPartialEq(TypeId type) const;

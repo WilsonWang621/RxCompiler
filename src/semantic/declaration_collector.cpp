@@ -23,9 +23,8 @@ void DeclarationCollector::prepareGlobalScope(){
             checker_.scope_.declareValue(name, builtin->second);
         }
     };
-
-    for(const char *name : {"i32", "u32", "isize", "usize", "bool", "Box", "Vec",
-                           "Copy", "Clone", "PartialEq", "Eq"}){
+    //内建名字先加入，所以用户声明与内建名字冲突时报错
+    for(const char *name : {"i32", "u32", "isize", "usize", "bool", "Box", "Vec", "Copy", "Clone", "PartialEq", "Eq"}){
         declareBuiltin(name, true);
     }
     for(const char *name : {"get_i32", "print_i32", "println_i32"}){
@@ -49,37 +48,37 @@ void DeclarationCollector::prepareGlobalScope(){
 
 void DeclarationCollector::collectFunction(const rx::ast::FunctionItem &function){
     const SymbolId symbol = checker_.allocateSymbol();
-    const bool inserted = checker_.model_.declarations.globalValues.emplace(function.name(), symbol).second;
+    const bool inserted = checker_.model_.declarations.globalValues.emplace(function.name(), symbol).second;  //1 写globalValues[函数名] → SymbolId
     if(!inserted){
         checker_.diagnose(function, "duplicate value declaration '" + function.name() + "'");
         return;
     }
-
+    //2 写symbols[SymbolId] → 函数基本信息
     checker_.model_.symbols.emplace(symbol, SymbolInfo{function.name(), SymbolKind::Function, function.id(), function.sourceSpan(), false});
-    checker_.model_.declaredSymbols.emplace(function.id(), symbol);
+    checker_.model_.declaredSymbols.emplace(function.id(), symbol);//3 写declaredSymbols[函数NodeId] → SymbolId
 
     FunctionDeclarationInfo declaration{symbol, &function};
     for(std::size_t index = 0; index < function.parameters().size(); ++index){
         const auto *parameter = dynamic_cast<const rx::ast::NamedFunctionParam *>(function.parameters()[index].get());
         if(parameter == nullptr) continue;
 
-        if(!declaration.parameters.emplace(parameter->name(), index).second){
+        if(!declaration.parameters.emplace(parameter->name(), index).second){  // 4. 建立declaration.parameters[参数名] = 参数下标;
             checker_.diagnose(*parameter, "duplicate parameter '" + parameter->name() + "'");
         }
     }
-    checker_.model_.declarations.functions.emplace(symbol, std::move(declaration));
+    checker_.model_.declarations.functions.emplace(symbol, std::move(declaration)); //5 写functions[SymbolId] → 函数详细声明信息
 }
 
 void DeclarationCollector::collectConstant(const rx::ast::ConstItem &constant){
-    const SymbolId symbol = checker_.allocateSymbol();
-    const bool inserted = checker_.model_.declarations.globalValues.emplace(constant.name(), symbol).second;
+    const SymbolId symbol = checker_.allocateSymbol(); 
+    const bool inserted = checker_.model_.declarations.globalValues.emplace(constant.name(), symbol).second; // 同function string -> SymbolId
     if(!inserted){
         checker_.diagnose(constant, "duplicate value declaration '" + constant.name() + "'");
         return;
     }
 
-    checker_.model_.symbols.emplace(symbol, SymbolInfo{constant.name(), SymbolKind::Constant, constant.id(), constant.sourceSpan(), false});
-    checker_.model_.declaredSymbols.emplace(constant.id(), symbol);
+    checker_.model_.symbols.emplace(symbol, SymbolInfo{constant.name(), SymbolKind::Constant, constant.id(), constant.sourceSpan(), false}); // SymbolId -> Info
+    checker_.model_.declaredSymbols.emplace(constant.id(), symbol);   // nodeId ->symbolId
     checker_.model_.declarations.constants.emplace(symbol, ConstantDeclarationInfo{symbol, &constant});
 }
 
@@ -96,15 +95,19 @@ void DeclarationCollector::collectStruct(const rx::ast::StructItem &structure){
 
     StructDeclarationInfo declaration{symbol, &structure};
     for(const auto &field : structure.fields()){
-        if(!declaration.fields.emplace(field->name(), field.get()).second){
+        if(!declaration.fields.emplace(field->name(), field.get()).second){ //declaration.fields[字段名] = 字段AST指针
             checker_.diagnose(*field, "duplicate field '" + field->name() + "' in struct '" + structure.name() + "'");
         }
     }
     checker_.model_.declarations.structs.emplace(symbol, std::move(declaration));
 }
 
-void DeclarationCollector::collectImpl(const rx::ast::ImplItem &implementation){
+void DeclarationCollector::collectImpl(const rx::ast::ImplItem &implementation){ //关联项不会作为普通顶层名字加入 globalValues
     const auto *target = dynamic_cast<const rx::ast::TypePathRef *>(&implementation.type());
+    /*必须是类型路径节点。
+    路径只有一段。
+    不带泛型实参。
+    对应名字必须已经登记为用户结构体*/
     if(target == nullptr || target->segments().size() != 1 || target->segments().front()->hasGenericArgs()){
         checker_.diagnose(implementation, "impl target must be a non-generic user struct");
         return;
@@ -155,16 +158,20 @@ void DeclarationCollector::collectImpl(const rx::ast::ImplItem &implementation){
             checker_.model_.declarations.functions.emplace(symbol, std::move(declaration));
         }else{
             ConstantDeclarationInfo declaration{symbol, constant};
-            declaration.selfType = checker_.model_.types.structure(structure->first);
+            declaration.selfType = checker_.model_.types.structure(structure->first); //要提前保存，因为后续的解析比如array长度可能提前触发关联常量求值，此时需要知道对应的Self
             checker_.model_.declarations.constants.emplace(symbol, std::move(declaration));
         }
     }
 }
 
-void DeclarationCollector::collectFunctionSignature(const rx::ast::FunctionItem &function, std::optional<TypeId> selfType){
+void DeclarationCollector::collectFunctionSignature(const rx::ast::FunctionItem &function, std::optional<TypeId> selfType){ //把语法签名转换成类型签名
     const auto symbol = checker_.model_.declaredSymbols.find(function.id());
     if(symbol == checker_.model_.declaredSymbols.end()) return; // 跳过第一遍已拒绝的重复声明。
-
+    /* 填充：
+    parameterTypes：普通参数类型，按源码顺序保存
+    receiverType：self 接收者类型
+    returnType：返回类型
+    */
     auto &declaration = checker_.model_.declarations.functions.at(symbol->second);
     declaration.parameterTypes.clear();
     declaration.parameterTypes.reserve(function.parameters().size());
@@ -193,7 +200,7 @@ void DeclarationCollector::collectFunctionSignature(const rx::ast::FunctionItem 
     declaration.returnType = function.returnType() != nullptr ? checker_.resolution_.resolveType(*function.returnType(), selfType) : checker_.model_.types.builtin(TypeKind::Unit);
 }
 
-void DeclarationCollector::collectConstantType(const rx::ast::ConstItem &constant, std::optional<TypeId> selfType){
+void DeclarationCollector::collectConstantType(const rx::ast::ConstItem &constant, std::optional<TypeId> selfType){ //解析声明类型
     const auto symbol = checker_.model_.declaredSymbols.find(constant.id());
     if(symbol == checker_.model_.declaredSymbols.end()) return;
 
@@ -217,7 +224,7 @@ void DeclarationCollector::collectStructField(const rx::ast::StructField &field,
     structure.fieldTypes.insert_or_assign(field.name(), checker_.resolution_.resolveType(field.type(), selfType));
 }
 
-void DeclarationCollector::collectImplTypes(const rx::ast::ImplItem &implementation){
+void DeclarationCollector::collectImplTypes(const rx::ast::ImplItem &implementation){ //为关联项提供具体的 Self
     // 第一遍已校验 impl 目标；这里复用声明身份，不重复报告非法目标。
     const auto *target = dynamic_cast<const rx::ast::TypePathRef *>(&implementation.type());
     if(target == nullptr || target->segments().size() != 1 || target->segments().front()->hasGenericArgs()) return;

@@ -54,7 +54,7 @@ TypeId TypesChecker::collectCommonType(const std::vector<TypeId> &types, const r
         if(type == errorType) return errorType;
     }
 
-    TypeId commonType = neverType;
+    TypeId commonType = neverType; //全部是never，结果就是never  输入为空，也是never
     for(std::size_t index = 0; index < types.size(); ++index){
         const TypeId type = types[index];
         checker_.model_.types.get(type);
@@ -360,10 +360,10 @@ void TypesChecker::checkStructDerive(const rx::ast::StructItem &structure){
         }
     }
 
-    if(std::find(derived.begin(), derived.end(), "Copy") != derived.end() && std::find(derived.begin(), derived.end(), "Clone") == derived.end()){
+    if(std::find(derived.begin(), derived.end(), "Copy") != derived.end() && std::find(derived.begin(), derived.end(), "Clone") == derived.end()){ //copy一定要有clone
         checker_.diagnose(structure, "deriving Copy requires explicitly deriving Clone");
     }
-    if(std::find(derived.begin(), derived.end(), "Eq") != derived.end() && std::find(derived.begin(), derived.end(), "PartialEq") == derived.end()){
+    if(std::find(derived.begin(), derived.end(), "Eq") != derived.end() && std::find(derived.begin(), derived.end(), "PartialEq") == derived.end()){ //Eq一定要有PartialEq
         checker_.diagnose(structure, "deriving Eq requires explicitly deriving PartialEq");
     }
 

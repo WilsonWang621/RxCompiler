@@ -39,18 +39,15 @@ bool anyChild(const ast::Expr &expression, Visitor visit){
         return visit(node->value());
     }
     if(const auto *node = dynamic_cast<const ast::StructExpr *>(&expression)){
-        return std::any_of(node->fields().begin(), node->fields().end(),
-            [&](const auto &field){ return visit(field->value()); });
+        return std::any_of(node->fields().begin(), node->fields().end(), [&](const auto &field){ return visit(field->value()); });
     }
     if(const auto *node = dynamic_cast<const ast::CallExpr *>(&expression)){
         return visit(node->callee()) ||
-               std::any_of(node->arguments().begin(), node->arguments().end(),
-                   [&](const auto &argument){ return visit(*argument); });
+               std::any_of(node->arguments().begin(), node->arguments().end(), [&](const auto &argument){ return visit(*argument); });
     }
     if(const auto *node = dynamic_cast<const ast::MethodCallExpr *>(&expression)){
         return visit(node->receiver()) ||
-               std::any_of(node->arguments().begin(), node->arguments().end(),
-                   [&](const auto &argument){ return visit(*argument); });
+               std::any_of(node->arguments().begin(), node->arguments().end(), [&](const auto &argument){ return visit(*argument); });
     }
     if(const auto *node = dynamic_cast<const ast::BlockExpr *>(&expression)){
         for(const auto &stmt : node->statements()){
@@ -85,9 +82,7 @@ bool diverges(const ast::Expr &expression, const SemanticModel &model);
 // 查找退出当前 loop 且操作数不发散的 break，包含不可达的 break。
 bool hasCompletingBreak(const ast::Expr &expression, const SemanticModel &model){
     if(const auto *node = dynamic_cast<const ast::BreakExpr *>(&expression)){
-        return node->value() == nullptr ||
-               !diverges(*node->value(), model) ||
-               hasCompletingBreak(*node->value(), model);
+        return node->value() == nullptr || !diverges(*node->value(), model) || hasCompletingBreak(*node->value(), model);
     }
     if(dynamic_cast<const ast::LoopExpr *>(&expression) != nullptr){
         return false;
@@ -106,9 +101,7 @@ bool diverges(const ast::Expr &expression, const SemanticModel &model){
     if(type != model.expressionTypes.end() && type->second == model.types.builtin(TypeKind::Never)){
         return true;
     }
-    if(dynamic_cast<const ast::ReturnExpr *>(&expression) != nullptr ||
-       dynamic_cast<const ast::BreakExpr *>(&expression) != nullptr ||
-       dynamic_cast<const ast::ContinueExpr *>(&expression) != nullptr){
+    if(dynamic_cast<const ast::ReturnExpr *>(&expression) != nullptr || dynamic_cast<const ast::BreakExpr *>(&expression) != nullptr || dynamic_cast<const ast::ContinueExpr *>(&expression) != nullptr){
         return true;
     }
     if(const auto *node = dynamic_cast<const ast::BinaryExpr *>(&expression)){

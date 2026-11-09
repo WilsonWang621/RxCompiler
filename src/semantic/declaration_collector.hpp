@@ -15,9 +15,7 @@ private:
 public:
     explicit DeclarationCollector(SemanticChecker &checker) : checker_(checker){}
 
-    // 第二次扫描先解析全部声明类型，再检查初始化式和函数体，支持前向调用。
-    void prepareGlobalScope();
-
+    //第一轮收集要调用的函数
     void collectFunction(const rx::ast::FunctionItem &function);
     void collectConstant(const rx::ast::ConstItem &constant);
     void collectStruct(const rx::ast::StructItem &structure);
@@ -27,5 +25,7 @@ public:
     void collectStructField(const rx::ast::StructField &field, TypeId selfType);
     void collectImplTypes(const rx::ast::ImplItem &implementation);
 
+    // 第二次扫描先解析全部声明类型，再检查初始化式和函数体，支持前向调用。
+    void prepareGlobalScope();
     void collectDeclarationType(const rx::ast::Crate &crate);
 };

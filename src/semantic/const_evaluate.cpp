@@ -30,7 +30,7 @@ std::optional<ConstValue> ConstEvaluate::evaluateConstant(SymbolId symbol){
             }
         }
     } context{checker_, symbol, checker_.currentSelfType_, std::nullopt};
-    // 常量初始化式按声明环境解析，不能捕获求值调用处的局部变量。
+    // 常量初始化式按声明环境解析，不能捕获求值调用处的局部变量，先退回到全局域
     if(checker_.scope_.depth() != 0){
         context.previousScope = checker_.scope_;
         while(checker_.scope_.depth() != 0) checker_.scope_.popScope();
@@ -58,8 +58,7 @@ std::optional<ConstValue> ConstEvaluate::evaluateConstantExpr(const rx::ast::Exp
         if(unary->op() != "-") return fail("unsupported operator in constant expression");
         operand = &unary->operand();
         negative = true;
-        if(dynamic_cast<const rx::ast::IntegerLiteralExpr *>(operand) == nullptr &&
-           dynamic_cast<const rx::ast::PathExpr *>(operand) == nullptr){
+        if(dynamic_cast<const rx::ast::IntegerLiteralExpr *>(operand) == nullptr && dynamic_cast<const rx::ast::PathExpr *>(operand) == nullptr){
             return fail("constant negation requires an integer literal or constant path");
         }
     }
@@ -70,8 +69,7 @@ std::optional<ConstValue> ConstEvaluate::evaluateConstantExpr(const rx::ast::Exp
         text.erase(std::remove(text.begin(), text.end(), '_'), text.end());
         TypeKind kind = TypeKind::I32;
         if(!negative && checker_.model_.types.get(expectedType).isInteger()) kind = checker_.model_.types.get(expectedType).kind();
-        for(const auto &[suffix, suffixKind] : std::initializer_list<std::pair<std::string, TypeKind>>{
-            {"i32", TypeKind::I32}, {"u32", TypeKind::U32}, {"isize", TypeKind::Isize}, {"usize", TypeKind::Usize}}){
+        for(const auto &[suffix, suffixKind] : std::initializer_list<std::pair<std::string, TypeKind>>{{"i32", TypeKind::I32}, {"u32", TypeKind::U32}, {"isize", TypeKind::Isize}, {"usize", TypeKind::Usize}}){
             if(text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0){
                 kind = suffixKind;
                 text.resize(text.size() - suffix.size());
@@ -120,7 +118,7 @@ std::optional<ConstValue> ConstEvaluate::evaluateConstantExpr(const rx::ast::Exp
     checker_.model_.expressionTypes.insert_or_assign(operand->id(), result.type);
     if(negative){
         if(!checker_.model_.types.get(result.type).isSignedInteger()) return fail("constant negation requires a signed integer");
-        // 用无符号运算实现 32 位取负，避免宿主 C++ 的有符号溢出。
+        // 用无符号运算实现 32 位取负，避免有符号溢出。
         result.bits = std::uint32_t{0} - result.bits;
     }
     checker_.model_.expressionTypes.insert_or_assign(expression.id(), result.type);

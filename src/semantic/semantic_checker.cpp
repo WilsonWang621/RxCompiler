@@ -31,7 +31,7 @@ void SemanticChecker::diagnose(const rx::ast::ASTNode &node, std::string message
 }
 
 void SemanticChecker::firstScan(const rx::ast::Crate &crate){
-    // 先建立完整的顶层命名空间，允许前向引用。
+    // 先建立完整的顶层命名空间（处理函数声明，常量声明，结构体声明），因为Rx允许前向引用。
     for(const auto &item : crate.items()){
         if(const auto *function = dynamic_cast<const rx::ast::FunctionItem *>(item.get())){
             declarationCollector_.collectFunction(*function);
@@ -60,12 +60,12 @@ void SemanticChecker::secondScan(const rx::ast::Crate &crate){
 
     for(const auto &item : crate.items()){
         if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
-            typesChecker_.checkStructLayout(*structure);
+            typesChecker_.checkStructLayout(*structure);  //有没有无限递归
         }
     }
     for(const auto &item : crate.items()){
         if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
-            typesChecker_.checkStructDerive(*structure);
+            typesChecker_.checkStructDerive(*structure);  //派生名称、依赖关系、字段是否具备所需能力
         }
     }
 
@@ -102,7 +102,6 @@ void SemanticChecker::checkMain(const rx::ast::Crate &crate){
         diagnose(function, "main must have no generic parameters");
     }
 
-    // 声明类型已统一解析，入口检查直接使用签名中的返回类型。
     const TypeId returnType = declaration->second.returnType;
     if(returnType.value == 0) throw std::logic_error("main signature must be collected before checking entry");
 

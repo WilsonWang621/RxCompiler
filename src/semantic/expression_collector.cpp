@@ -281,8 +281,7 @@ TypeId ExpressionCollector::collectUnaryExpr(const rx::ast::UnaryExpr &expressio
     TypeId scalarType = type;
     if(info.kind() == TypeKind::Reference && !info.isMutable()) scalarType = info.elementType();
     const auto &scalar = checker_.model_.types.get(scalarType);
-    if((op == "-" && scalar.isSignedInteger()) ||
-       (op == "!" && (scalar.isInteger() || scalar.kind() == TypeKind::Bool))){
+    if((op == "-" && scalar.isSignedInteger()) || (op == "!" && (scalar.isInteger() || scalar.kind() == TypeKind::Bool))){
         return scalarType;
     }
     checker_.diagnose(expression, "invalid operand for unary operator '" + op + "'");

@@ -4,7 +4,7 @@
 #include <algorithm>
 #include <utility>
 
-TypeId Resolution::resolveType(const rx::ast::TypeRef &type, std::optional<TypeId> selfType){
+TypeId Resolution::resolveType(const rx::ast::TypeRef &type, std::optional<TypeId> selfType){//unit array & TypePath
     if(!selfType.has_value()) selfType = checker_.currentSelfType_;
     struct ContextGuard{
         std::optional<TypeId> &selfType;
@@ -58,7 +58,7 @@ TypeId Resolution::resolveTypePath(const rx::ast::TypePathRef &type, std::option
     const std::size_t count = segment.hasGenericArgs() ? segment.genericArgs()->size() : 0;
     TypeId result = errorType;
 
-    if(name == "Self"){
+    if(name == "Self"){ //没有上下文时报告错误；有结构体上下文时，就记录 Self 对应的结构体符号
         if(count != 0) return fail(segment, "Self takes no concrete type arguments");
         if(!selfType.has_value()){
             return fail(segment, "Self is only allowed in a struct or impl context");
@@ -132,7 +132,7 @@ std::optional<SymbolId> Resolution::resolveValuePath(const rx::ast::PathExpr &pa
     if(path.segments().empty() || path.segments().size() > 2){
         return fail(path, "unsupported value path");
     }
-    if(path.segments().size() == 1){
+    if(path.segments().size() == 1){ //单段路径：直接从值作用域查找
         const auto &segment = *path.segments().front();
         const auto symbol = checker_.scope_.lookupValue(segment.name());
         if(!symbol.has_value()){
@@ -212,8 +212,7 @@ std::optional<SymbolId> Resolution::resolveValuePath(const rx::ast::PathExpr &pa
             builtin = builtin || member.name() == "new";
         }
         if(type.kind() == TypeKind::Vec){
-            builtin = builtin || member.name() == "len" || member.name() == "is_empty"
-                      || member.name() == "push" || member.name() == "remove";
+            builtin = builtin || member.name() == "len" || member.name() == "is_empty" || member.name() == "push" || member.name() == "remove";
         }
     }
     if(!builtin) return fail(member, "unknown associated value '" + member.name() + "'");

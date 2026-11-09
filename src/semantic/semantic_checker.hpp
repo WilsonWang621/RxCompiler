@@ -35,7 +35,7 @@ private:
     std::optional<TypeId> currentSelfType_;      //当前环境中 Self 代表的具体类型。类型解析和路径解析用它处理
     enum class ConstantState{ Evaluating, Complete, Failed };
     // 表中不存在的符号尚未开始求值。
-    std::unordered_map<SymbolId, ConstantState> constantStates_;
+    std::unordered_map<SymbolId, ConstantState> constantStates_;  //检查循环依赖 + 避免重复计算处理
     std::uint32_t nextSymbolId_ = 1;
 
     // 各模块共享当前 checker 的模型和上下文，不单独保存语义状态。

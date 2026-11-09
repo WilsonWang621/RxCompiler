@@ -30,9 +30,9 @@ struct hash<TypeId>{
 }
 
 enum class TypeKind{
-    Error, // 语义错误恢复时使用，避免把错误误认为 unit 或 never。
+    Error, // 语义错误恢复时使用，避免把错误误认为 unit 或 never 同时防止一个错误后续一直报错
     Unit,
-    Never,
+    Never, //表示表达式不会正常产生结果，例如 return
     Bool,
     I32,
     U32,
@@ -119,9 +119,7 @@ class TypeTable{
 
 public:
     TypeTable(){
-        for(TypeKind kind : {TypeKind::Error, TypeKind::Unit, TypeKind::Never,
-                             TypeKind::Bool, TypeKind::I32, TypeKind::U32,
-                             TypeKind::Isize, TypeKind::Usize}){
+        for(TypeKind kind : {TypeKind::Error, TypeKind::Unit, TypeKind::Never, TypeKind::Bool, TypeKind::I32, TypeKind::U32, TypeKind::Isize, TypeKind::Usize}){
             getOrCreate(Type{kind});
         }
     }
