@@ -9,12 +9,12 @@
 - 已接入词法分析、语法分析、语法错误诊断和 AST 打印；正在逐步扩展 AST 构建支持。
 - AST 节点已有 `NodeId` 和 `SourceSpan`，用于关联外部语义结果与定位诊断。
 - 已实现值／类型命名空间、名字绑定栈、作用域退出恢复和 `ScopeGuard`，以及符号信息、声明索引和语义结果表。
-- `SemanticChecker` 的第一轮扫描已收集顶层函数、常量、结构体及 `impl` 关联项，并诊断重复声明、参数、字段及无效 `impl` 目标。第二轮扫描仍为空；函数体名字解析、类型检查和常量求值尚未实现。
-- `--stage ast` 与 `--stage semantic` 目前均只解析源码、构建 AST 并打印到标准输出。`semantic_checker.cpp` 尚未加入 CMake 编译目标，命令行也尚未调用 `SemanticChecker`。
-- LLVM IR 尚未实现，`config.mk` 中的 `IR` 留空。
+- `SemanticChecker` 第一轮收集顶层声明和关联项，第二轮解析声明类型、检查函数体并求值常量。
+- `--stage ast` 构建并打印 AST；`--stage semantic` 进一步执行语义检查，诊断错误时返回 1。
+- 已接入 `--stage ir` 和部分标量表达式的 LLVM IR 生成；`config.mk` 已配置 IR 测试链路，尚未支持全部语言功能。
 - `--stage codegen` 保留命令行入口，当前会报告未实现并返回退出码 2；优化阶段同样尚未实现。
 
-官方 semantic 测试中的拒绝用例会暴露缺失的语义检查；部分合法用例也可能因 AST 尚未支持对应语法而失败。现阶段的成功结果只表示通过了当前前端入口，不能据此认定完整语义正确。
+语义测试和 IR 测试分别运行；语义检查通过不代表对应语言功能已支持 IR 生成。
 
 ## 项目结构
 
@@ -101,10 +101,10 @@ AST 保存语法结构、节点 ID 与源码位置；语义结果通过 ID 存�
 | `COMPILER` | 默认 `./target/compiler`，可覆盖可执行文件路径。 |
 | `BUILD_COMPILER` | 默认 `./scripts/build.sh`，供 `make build` 和测试构建使用。 |
 | `BUILD` | 构建 C++ 编译器一次，并保留空的 `{runtime}` 文件。 |
-| `SEMANTIC` | 调用当前解析与 AST 构建入口。 |
-| `IR` | 留空；选中 IR 测试时运行器提示先配置该命令。 |
+| `SEMANTIC` | 解析、名字解析与类型检查，不生成 IR。 |
+| `IR` | `$(COMPILER) --stage ir {source} -o {output}`，输出 LLVM IR。 |
 | `CODEGEN` | 调用自研编译器的 codegen 入口，目前明确报告未实现。 |
-| `RUN` | 保留 REIMU 命令，供后续 IR、codegen 和 optimization 使用。 |
+| `RUN` | 用 REIMU 执行 RV32IM 汇编，保存输出和周期统计。 |
 
 `make test` 默认使用 `STAGE=semantic`，通过 `scripts/test.py` 发现 `tests/` 下的 manifest 并调用自己的 C++ 编译器：
 
@@ -136,9 +136,30 @@ c++ -std=c++17 -Wall -Wextra -Wpedantic -Isrc/ast \
 ./target/tests/unit/scope_test
 ```
 
-`STAGE` 可显式设为 `semantic`、`ir`、`codegen` 或 `optimization`；`STAGE=` 表示选择全部阶段。目前 IR 未配置，codegen 与 optimization 尚不能通过，待实现后再启用。原模板的 Rust 参考辅助代码仍保留在 `crates/rx`，默认测试命令已切换为自研编译器。
+`STAGE` 可显式设为 `semantic`、`ir`、`codegen` 或 `optimization`；`STAGE=` 表示选择全部阶段。IR 已配置；尚未实现的 IR 功能会报告生成失败，codegen 与 optimization 尚不能通过。原模板的 Rust 参考辅助代码仍保留在 `crates/rx`，默认测试命令已切换为自研编译器。
 
-## 后续运行环境
+## IR 增量验证
+
+```sh
+make test STAGE=ir FILTER=ir                 # 本地标量冒烟测试（目录存在时）
+make test STAGE=ir FILTER=official:codegen:builtin-io # CI 使用的官方冒烟测试
+make test STAGE=ir                          # 全部 IR 用例，包含尚未实现的功能
+```
+
+运行器从 manifest 的 `codegen` 用例派生 IR 测试，无需修改官方 manifest。新增本地回归可放入被 Git 忽略的 `tests/ir/`，沿用 `stage: codegen` 和输入／预期输出格式。
+
+每个 IR 用例依次执行以下检查，失败后停止该用例，继续其他用例：
+
+| 日志／产物 | 定位 |
+| --- | --- |
+| `semantic.*` | 独立语义检查，失败说明前端未接受该用例。 |
+| `compile.*`、`program.ll` | 语义检查通过后的 IR 生成，未实现功能也在此报错。 |
+| `clang.*`、`program.s` | Clang 解析、验证并将 IR 编译为 RV32IM；失败需检查 IR 格式、类型或目标编译问题。 |
+| `run-N.*` | REIMU 执行失败、超时或实际输出与预期不一致。 |
+
+完整命令、标准输出和错误输出保存在 `target/tests/run-*/用例编号/`。`tests/ir/scalar.rx` 当前覆盖调用、整数运算、赋值、引用和移位的输出验证，以及比较指令的格式验证。每补齐一个功能，可增加相应输入／输出用例并在本地运行；CI 仅使用官方测试。
+
+## IR 运行环境
 
 开始验证生成代码时，初始化并单独构建 REIMU（需要 Python 3、xmake 和支持 C++23 的编译器）：
 
@@ -158,4 +179,4 @@ GitHub Actions 工作流 `.github/workflows/test.yml` 会在每次 push、Pull R
 
 提交 Code Review 时应附上对应的 GitHub Actions Run 链接，并确保 `Build compiler` 检查通过。建议在 GitHub 分支保护规则中将该检查设为合并前必需。
 
-当前 CI 只强制检查编译器构建。语义分析形成稳定回归结果后，应增加官方 `make test STAGE=semantic`；启用 IR 或后端测试时，再补充 Clang、xmake 和 REIMU 构建步骤。
+CI 运行编译器构建、全部语义测试和 `FILTER=official:codegen:builtin-io` 的官方 IR 冒烟测试，并安装 Clang 22、xmake 和构建 REIMU。各步骤状态写入 Summary；语义、IR、REIMU 构建日志及每个用例的中间产物保留 90 天。完整官方 IR 套件尚不作为通过门槛，可在本地逐功能运行。

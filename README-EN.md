@@ -9,12 +9,12 @@ A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/
 - Lexing, parsing, syntax diagnostics and AST printing are wired up; AST construction support is being expanded incrementally.
 - AST nodes carry `NodeId` and `SourceSpan` for associating external semantic results and locating diagnostics.
 - Separate value/type namespaces, name binding stacks, scope-exit restoration and `ScopeGuard` are implemented, alongside symbol information, declaration indexes and semantic result tables.
-- The first `SemanticChecker` scan collects top-level functions, constants, structs and `impl` associated items, diagnosing duplicate declarations, parameters, fields and invalid `impl` targets. The second scan is still empty; function-body name resolution, type checking and constant evaluation are not implemented.
-- Both `--stage ast` and `--stage semantic` currently only parse the source, build an AST and print it to stdout. `semantic_checker.cpp` is not yet included in the CMake target, and the CLI does not invoke `SemanticChecker`.
-- LLVM IR generation is not implemented; `IR` in `config.mk` is empty.
+- The first `SemanticChecker` scan collects top-level declarations and associated items; the second resolves declaration types, checks function bodies and evaluates constants.
+- `--stage ast` builds and prints the AST; `--stage semantic` additionally checks semantics and exits with code 1 on diagnostics.
+- `--stage ir` emits LLVM IR for a subset of scalar expressions; `config.mk` enables the IR test pipeline. Full language support is still in progress.
 - `--stage codegen` retains its CLI entrypoint but reports that code generation is not implemented and exits with code 2. Optimization is also not implemented.
 
-Negative official semantic cases expose the missing semantic checks. Some positive cases may also fail when their syntax is not supported by the AST builder. A successful result currently demonstrates acceptance by the frontend entrypoint, not complete semantic correctness.
+Semantic and IR tests run separately; passing semantic checks does not imply that the corresponding feature supports IR generation.
 
 ## Project layout
 
@@ -101,10 +101,10 @@ The root `Makefile` provides the common entrypoint. `config.mk` defines the comp
 | `COMPILER` | Defaults to `./target/compiler`; override to select another executable. |
 | `BUILD_COMPILER` | Defaults to `./scripts/build.sh`; used by `make build` and test builds. |
 | `BUILD` | Builds the C++ compiler once and leaves an empty `{runtime}` file. |
-| `SEMANTIC` | Invokes the current parsing and AST construction entrypoint. |
-| `IR` | Empty; selecting IR tests prompts you to configure this command first. |
+| `SEMANTIC` | Parses, resolves names and checks types without generating IR. |
+| `IR` | `$(COMPILER) --stage ir {source} -o {output}` emits LLVM IR. |
 | `CODEGEN` | Invokes the custom compiler's codegen entrypoint, which currently reports that it is not implemented. |
-| `RUN` | Retains the REIMU command for future IR, codegen and optimization tests. |
+| `RUN` | Executes RV32IM assembly in REIMU and saves output and cycle statistics. |
 
 `make test` defaults to `STAGE=semantic`. `scripts/test.py` discovers manifests under `tests/` and invokes the project's C++ compiler:
 
@@ -136,9 +136,30 @@ c++ -std=c++17 -Wall -Wextra -Wpedantic -Isrc/ast \
 ./target/tests/unit/scope_test
 ```
 
-Set `STAGE` explicitly to `semantic`, `ir`, `codegen` or `optimization`; `STAGE=` selects all stages. IR is currently unconfigured, and codegen/optimization cannot pass yet. Enable them as their implementations become available. The template's Rust reference helpers remain in `crates/rx`, but default test commands now use the custom compiler.
+Set `STAGE` explicitly to `semantic`, `ir`, `codegen` or `optimization`; `STAGE=` selects all stages. IR is configured; unsupported IR features report generation failures. Codegen/optimization cannot pass yet. The template's Rust reference helpers remain in `crates/rx`, but default test commands now use the custom compiler.
 
-## Future runtime setup
+## Incremental IR validation
+
+```sh
+make test STAGE=ir FILTER=ir                 # Local scalar smoke suite, when present
+make test STAGE=ir FILTER=official:codegen:builtin-io # Official smoke suite used in CI
+make test STAGE=ir                          # All IR cases, including unsupported features
+```
+
+The runner derives IR cases from manifest entries with `stage: codegen`; official manifests need no changes. Add regressions under the Git-ignored local `tests/ir/` directory using the same manifest and input/output format.
+
+Each IR case runs these checks in order. A failure stops that case while other cases continue:
+
+| Logs / artifacts | Failure location |
+| --- | --- |
+| `semantic.*` | Independent semantic check: the frontend rejected the case. |
+| `compile.*`, `program.ll` | IR generation after semantic success, including unsupported features. |
+| `clang.*`, `program.s` | Clang parsing, verification and RV32IM lowering: inspect IR syntax, types or target compilation. |
+| `run-N.*` | REIMU execution failure, timeout or output mismatch. |
+
+Commands, stdout and stderr are retained in `target/tests/run-*/case-number/`. `tests/ir/scalar.rx` checks output for calls, integer arithmetic, assignments, references and shifts, and validates the format of comparison instructions. Extend this suite as each feature becomes available.
+
+## IR runtime setup
 
 Before validating generated programs, initialize and build REIMU separately. It requires Python 3, xmake and a C++23 compiler:
 
@@ -158,4 +179,4 @@ The GitHub Actions workflow at `.github/workflows/test.yml` checks out the offic
 
 Include the corresponding GitHub Actions run link with each code review and ensure that `Build compiler` passes. Configure that check as required in the GitHub branch protection rules.
 
-CI currently requires only a successful compiler build. Once semantic analysis has stable regression results, add the official `make test STAGE=semantic` run. Add Clang, xmake, and REIMU setup when enabling IR or backend tests.
+CI runs the compiler build, all semantic tests and the official `FILTER=official:codegen:builtin-io` IR smoke suite, installing Clang 22 and xmake and building REIMU. Step outcomes appear in the summary; semantic, IR and REIMU build logs and per-case artifacts are retained for 90 days. The full official IR suite is available locally as implementation progresses.

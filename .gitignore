@@ -10,8 +10,7 @@
 # Python test runner
 __pycache__/
 
-# Keep the official testcase submodule in version control. Ignore locally
-# written tests unless they are explicitly promoted into the official suite.
+# Track only the official testcase submodule; keep other tests local.
 /tests/*
 !/tests/official/
 

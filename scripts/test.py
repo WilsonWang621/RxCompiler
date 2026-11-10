@@ -263,7 +263,7 @@ def execute(command, prefix, timeout, stdin=None):
                 process.wait()
                 if isinstance(error, KeyboardInterrupt):
                     raise
-                raise TestError(f"timed out after {timeout:g}s") from None
+                raise TestError(f"{prefix.name}: timed out after {timeout:g}s") from None
 
 
 def excerpt(path):
@@ -299,6 +299,12 @@ def run_case(case, commands, directory, compile_timeout, run_timeout, runtime=b"
     output = directory / ("program.ll" if case.stage == "ir" else "program.s")
     runtime_path = directory / "runtime.s"
     runtime_path.write_bytes(b"")
+    if case.stage == "ir":
+        prefix = directory / "semantic"
+        command = expand(commands["semantic"], case.source)
+        code = execute(command, prefix, compile_timeout)
+        if code:
+            raise TestError(f"semantic check failed (exit {code})\n{excerpt(prefix.with_suffix('.stderr'))}")
     prefix = directory / "compile"
     command = expand(commands[case.compiler_command], case.source, output, runtime=runtime_path)
     code = execute(command, prefix, compile_timeout)
@@ -306,7 +312,8 @@ def run_case(case, commands, directory, compile_timeout, run_timeout, runtime=b"
     # and other unexpected exits must never pass a negative testcase.
     expected = 0 if case.success else 1
     if code != expected:
-        raise TestError(f"compiler exited {code}, expected {expected}\n{excerpt(prefix.with_suffix('.stderr'))}")
+        phase = "IR generation" if case.stage == "ir" else "compiler"
+        raise TestError(f"{phase} exited {code}, expected {expected}\n{excerpt(prefix.with_suffix('.stderr'))}")
     if case.stage not in RUNTIME_STAGES:
         return []
     if not output.is_file():
@@ -387,7 +394,12 @@ def main():
                 raise TestError(f"no {stage} testcases match the selection")
         commands = {name: os.environ.get(f"RX_TEST_{name.upper()}", "")
                     for name in ("semantic", "ir", "codegen", "run")}
-        for stage in {c.compiler_command for c in cases} | ({"run"} if any(c.stage in RUNTIME_STAGES for c in cases) else set()):
+        required = {c.compiler_command for c in cases}
+        if any(c.stage in RUNTIME_STAGES for c in cases):
+            required.add("run")
+        if any(c.stage == "ir" for c in cases):
+            required.add("semantic")
+        for stage in required:
             if not commands[stage].strip():
                 raise TestError(f"set {stage.upper()} in config.mk before running these tests")
         compile_timeout = positive_timeout("COMPILE_TIMEOUT", "30")
