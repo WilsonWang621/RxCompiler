@@ -175,3 +175,14 @@ IRValue IRBuilder::createCompare(IRComparePredicate predicate, IRValue left, IRV
     append(instruction);
     return result;
 }
+
+IRValue IRBuilder::createZExt(IRValue value){
+    if(value.type != IRType::I1){
+        throw std::invalid_argument("IR zero extension requires an i1 value");
+    }
+
+    IRValue result{IRType::I32, "v" + std::to_string(nextValueId_), 0};
+    append({IROpcode::ZExt, result, {std::move(value)}, {}});
+    ++nextValueId_;
+    return result;
+}

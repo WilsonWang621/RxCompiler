@@ -205,6 +205,11 @@ void IRModule::dump(std::ostream &out, int indent) const{
                         out << ", ";
                         printValue(instruction.operands.at(1));
                         break;
+                    case IROpcode::ZExt:
+                        out << "zext ";
+                        printTypedValue(instruction.operands.at(0));
+                        out << " to " << typeName(instruction.result.value().type);
+                        break;
                     case IROpcode::GetElementPtr:
                         if(!instruction.structure) throw std::logic_error("IR field address has no struct type");
                         instruction.structure->fields.at(instruction.fieldIndex);

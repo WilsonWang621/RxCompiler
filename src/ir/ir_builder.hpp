@@ -27,7 +27,9 @@ public:
     void createStore(IRValue value, IRValue address); // 按 value.type 写入。
     IRValue createBinary(IROpcode opcode, IRValue left, IRValue right); 
     IRValue createCompare(IRComparePredicate predicate, IRValue left, IRValue right); // 结果为 I1。
+    IRValue createZExt(IRValue value); // 当前仅支持 I1 -> I32。
     IRValue createFieldAddress(const IRStruct &structure, IRValue address, std::size_t fieldIndex);
+
     // arguments 包含 self；无返回值为 nullopt，否则创建并返回一个 SSA 结果。
     std::optional<IRValue> createCall(const IRFunction &callee, std::vector<IRValue> arguments);
     void createReturn(std::optional<IRValue> value = std::nullopt); // 与当前返回类型匹配。

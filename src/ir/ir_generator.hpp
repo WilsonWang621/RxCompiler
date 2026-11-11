@@ -40,6 +40,7 @@ private:
     IRExprResult generateAssignment(const rx::ast::AssignExpr &expression);
     IRExprResult generateCompoundAssignment(const rx::ast::CompoundAssignExpr &expression);
     IRExprResult generateUnary(const rx::ast::UnaryExpr &expression);
+    IRExprResult generateCast(const rx::ast::CastExpr &expression);
 
     // control_flow_generator.cpp：控制流表达式。
     IRExprResult generateReturn(const rx::ast::ReturnExpr &expression);
