@@ -12,6 +12,7 @@ void IRGenerationContext::clear(){
     constants.clear();
     functions.clear();
     structs.clear();
+    loops = {};
     currentFunction = {};
     model = nullptr;
 }

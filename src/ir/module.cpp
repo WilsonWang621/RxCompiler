@@ -160,7 +160,7 @@ void IRModule::dump(std::ostream &out, int indent) const{
         }
         out << ") {\n";
         for(const auto &block : function->blocks){
-            if(block->instructions.empty() || block->instructions.back().opcode != IROpcode::Ret){
+            if(block->instructions.empty() || (block->instructions.back().opcode != IROpcode::Ret && block->instructions.back().opcode != IROpcode::Br)){
                 throw std::logic_error("IR block has no terminator");
             }
             out << pad;
@@ -228,6 +228,25 @@ void IRModule::dump(std::ostream &out, int indent) const{
                             printTypedValue(instruction.operands[index]);
                         }
                         out << ')';
+                        break;
+                    case IROpcode::Br:
+                        if(instruction.result || (instruction.operands.empty() ? instruction.destination.size() != 1 : instruction.operands.size() != 1 || instruction.operands.front().type != IRType::I1 || instruction.destination.size() != 2)){
+                            throw std::logic_error("invalid IR branch instruction");
+                        }
+                        out << "br ";
+                        if(!instruction.operands.empty()){
+                            printTypedValue(instruction.operands.front());
+                            out << ", ";
+                        }
+                        for(std::size_t index = 0; index < instruction.destination.size(); ++index){
+                            const auto *destination = instruction.destination[index];
+                            if(!destination || std::none_of(function->blocks.begin(), function->blocks.end(), [&](const auto &candidate){ return candidate.get() == destination; })){
+                                throw std::logic_error("invalid IR branch target");
+                            }
+                            if(index) out << ", ";
+                            out << "label ";
+                            printName(out, destination->name, '%');
+                        }
                         break;
                     case IROpcode::Ret:
                         if(instruction.operands.empty()) out << "ret void";

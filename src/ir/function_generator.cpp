@@ -20,6 +20,7 @@ void IRGenerator::generateFunction(const rx::ast::FunctionItem &function){
     } guard{context_};
 
     auto &builder = context_.builder;
+    basicBlockId = 0;
     builder.beginFunction(*irFunction);
     auto &entry = builder.createBlock(*irFunction, "entry");
     builder.setInsertPoint(entry);

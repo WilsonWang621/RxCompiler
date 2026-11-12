@@ -42,6 +42,10 @@ bool IRBuilder::ownsFunction(const IRFunction &function) const{
     return module_ && std::any_of(module_->functions_.begin(), module_->functions_.end(), [&](const auto &candidate){ return candidate.get() == &function;});
 }
 
+bool IRBuilder::ownsBlock(const IRBasicBlock &block) const{
+    return function_ && std::any_of(function_->blocks.begin(), function_->blocks.end(), [&](const auto &candidate){ return candidate.get() == &block;});
+}
+
 void IRBuilder::beginFunction(IRFunction &function){
     if(!module_) throw std::logic_error("IRBuilder has no module");
     if(!ownsFunction(function)) throw std::invalid_argument("function does not belong to the current module");
@@ -66,17 +70,22 @@ IRBasicBlock &IRBuilder::createBlock(IRFunction &function, std::string name){
     return *function.blocks.back();
 }
 
+IRBasicBlock &IRBuilder::createBlock(std::string name){
+    if(!function_) throw std::logic_error("IRBuilder has no function");
+    return createBlock(*function_, std::move(name));
+}
+
 void IRBuilder::setInsertPoint(IRBasicBlock &block){
     if(!function_) throw std::logic_error("IRBuilder has no function");
-    const auto found = std::find_if(function_->blocks.begin(), function_->blocks.end(), [&](const auto &candidate){ return candidate.get() == &block;});
-    if(found == function_->blocks.end()) throw std::invalid_argument("block does not belong to the current function");
+    if(!ownsBlock(block)) throw std::invalid_argument("block does not belong to the current function");
     block_ = &block;
 }
 
 bool IRBuilder::isTerminated() const{
     if(!block_) throw std::logic_error("IRBuilder has no insertion block");
-    // 当前 IR 仅有 Ret 终结指令；加入分支指令时在这里扩展判断。
-    return !block_->instructions.empty() && block_->instructions.back().opcode == IROpcode::Ret;
+    if(block_->instructions.empty()) return false;
+    const IROpcode opcode = block_->instructions.back().opcode;
+    return opcode == IROpcode::Ret || opcode == IROpcode::Br;
 }
 
 void IRBuilder::append(IRInstruction instruction){
@@ -181,8 +190,23 @@ IRValue IRBuilder::createZExt(IRValue value){
         throw std::invalid_argument("IR zero extension requires an i1 value");
     }
 
-    IRValue result{IRType::I32, "v" + std::to_string(nextValueId_), 0};
+    IRValue result{IRType::I32, "v" + std::to_string(nextValueId_++), 0};
     append({IROpcode::ZExt, result, {std::move(value)}, {}});
-    ++nextValueId_;
     return result;
 }
+
+void IRBuilder::createIf(IRValue condition, IRBasicBlock &ifBlock, IRBasicBlock &elseBlock){
+    if(condition.type != IRType::I1) throw std::invalid_argument("IR if condition requires an i1 value");
+    if(!ownsBlock(ifBlock) || !ownsBlock(elseBlock)) throw std::invalid_argument("branch target does not belong to the current function");
+    IRInstruction instruction{IROpcode::Br, {}, {std::move(condition)}, {}};
+    instruction.destination = {&ifBlock, &elseBlock};
+    append(std::move(instruction));
+}
+
+void IRBuilder::createBranch(IRBasicBlock &destination){
+    if(!ownsBlock(destination)) throw std::invalid_argument("branch target does not belong to the current function");
+    IRInstruction instruction{IROpcode::Br, {}, {}, {}};
+    instruction.destination = {&destination};
+    append(std::move(instruction));
+}
+

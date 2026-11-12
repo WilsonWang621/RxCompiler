@@ -6,6 +6,8 @@ class IRGenerator{ //遍历 AST 并直接使用 context_.builder 构造 IR；实
 private:
     IRGenerationContext context_;
 
+    uint32_t basicBlockId = 0; //防止基本快命名重名
+
     //先第一遍收集声明
     void generateItem(const rx::ast::Item &item);
 
@@ -44,6 +46,11 @@ private:
 
     // control_flow_generator.cpp：控制流表达式。
     IRExprResult generateReturn(const rx::ast::ReturnExpr &expression);
+    IRExprResult generateIf(const rx::ast::IfExpr &expression);
+    IRExprResult generateContinue(const rx::ast::ContinueExpr &expression);
+    IRExprResult generateBreak(const rx::ast::BreakExpr &expression);
+    IRExprResult generateLoop(const rx::ast::LoopExpr &expression);
+    IRExprResult generateWhile(const rx::ast::WhileExpr &expression);
 
 public:
     IRGenerator() = default;

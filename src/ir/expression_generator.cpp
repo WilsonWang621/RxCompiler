@@ -8,6 +8,11 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     if(const auto *call = dynamic_cast<const rx::ast::CallExpr *>(&expression)) return generateCall(*call);
     if(const auto *block = dynamic_cast<const rx::ast::BlockExpr *>(&expression)) return generateBlock(*block);
     if(const auto *ret = dynamic_cast<const rx::ast::ReturnExpr *>(&expression)) return generateReturn(*ret);
+    if(const auto *ifExpr = dynamic_cast<const rx::ast::IfExpr *>(&expression)) return generateIf(*ifExpr);
+    if(const auto *loopExpr = dynamic_cast<const rx::ast::LoopExpr *>(&expression)) return generateLoop(*loopExpr);
+    if(const auto *whileExpr = dynamic_cast<const rx::ast::WhileExpr *>(&expression)) return generateWhile(*whileExpr);
+    if(const auto *breakExpr = dynamic_cast<const rx::ast::BreakExpr *>(&expression)) return generateBreak(*breakExpr);
+    if(const auto *continueExpr = dynamic_cast<const rx::ast::ContinueExpr *>(&expression)) return generateContinue(*continueExpr);
     if(dynamic_cast<const rx::ast::UnitExpr *>(&expression)) return {};
     const auto constant = model.constantValues.find(expression.id());
     if(constant != model.constantValues.end()){

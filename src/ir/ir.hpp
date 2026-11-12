@@ -8,7 +8,7 @@
 #include <vector>
 
 enum class IRType{Void, I32, Ptr, I1};
-enum class IROpcode{Alloca, Store, Call, Ret, Load, Add, Sub, Mul, UDiv, SDiv, URem, SRem, And, Or, Xor, Shl, LShr, AShr, ICmp, GetElementPtr, ZExt};
+enum class IROpcode{Alloca, Store, Call, Ret, Load, Add, Sub, Mul, UDiv, SDiv, URem, SRem, And, Or, Xor, Shl, LShr, AShr, ICmp, GetElementPtr, ZExt, Br};
  //Shl:shift left,LShr:logical shift left Arithmetic~,ICmp:Integer Compare,SRem:Signed Remainder ZExt:zero extension
 enum class IRComparePredicate{Eq, Ne, Sgt, Sge, Slt, Sle, Ugt, Uge, Ult, Ule};
 
@@ -28,6 +28,8 @@ struct IRStruct{
     std::vector<IRType> fields; // 本轮覆盖标量和引用字段，顺序与 AST 声明一致。
 };
 
+struct IRBasicBlock;
+
 struct IRInstruction{
     IROpcode opcode = IROpcode::Ret;
     std::optional<IRValue> result; // 非 void 调用始终有结果，调用方可丢弃该值。
@@ -37,6 +39,7 @@ struct IRInstruction{
     IRComparePredicate predicate = IRComparePredicate::Eq; // 仅 ICmp 使用。
     const IRStruct *structure = nullptr; // 仅结构体 GEP 使用，由 Module 拥有。
     std::size_t fieldIndex = 0; // 按 structure->fields 索引。
+    std::vector<IRBasicBlock *> destination = {}; //br 跳转目标，由 IRFunction 拥有。
 };
 
 struct IRBasicBlock{
@@ -53,3 +56,4 @@ struct IRFunction{
     bool isDeclaration = false; // 声明没有块；beginFunction 开始生成定义。
     bool isBuiltin = false; // 内置 I/O 声明在输出时附带运行时定义。
 };
+
