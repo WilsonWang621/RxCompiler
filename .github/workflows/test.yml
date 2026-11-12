@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build compiler, semantic tests and IR smoke tests
+    name: Build compiler, semantic tests and IR regressions
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
@@ -66,6 +66,13 @@ jobs:
           set -o pipefail
           make test STAGE=ir FILTER=official:codegen:builtin-io VERBOSE=true BUILD= 2>&1 | tee target/ci/ir.log
 
+      - name: Run IR control-flow regressions
+        id: control_flow
+        shell: bash
+        run: |
+          set -o pipefail
+          make test-ir-control-flow VERBOSE=true BUILD= 2>&1 | tee target/ci/control-flow.log
+
       - name: Write CI summary
         if: always()
         shell: bash
@@ -74,6 +81,7 @@ jobs:
           SEMANTIC_OUTCOME: ${{ steps.semantic.outcome }}
           REIMU_OUTCOME: ${{ steps.reimu.outcome }}
           IR_OUTCOME: ${{ steps.ir.outcome }}
+          CONTROL_FLOW_OUTCOME: ${{ steps.control_flow.outcome }}
         run: |
           {
             echo '## Rx compiler CI record'
@@ -87,6 +95,7 @@ jobs:
             printf '| Semantic tests | `%s` |\n' "${SEMANTIC_OUTCOME}"
             printf '| REIMU build | `%s` |\n' "${REIMU_OUTCOME}"
             printf '| IR smoke tests | `%s` |\n' "${IR_OUTCOME}"
+            printf '| IR control-flow regressions | `%s` |\n' "${CONTROL_FLOW_OUTCOME}"
             if [ -f target/ci/semantic.log ]; then
               echo
               echo '```text'
@@ -97,6 +106,12 @@ jobs:
               echo
               echo '```text'
               tail -n 3 target/ci/ir.log
+              echo '```'
+            fi
+            if [ -f target/ci/control-flow.log ]; then
+              echo
+              echo '```text'
+              tail -n 3 target/ci/control-flow.log
               echo '```'
             fi
           } >> "${GITHUB_STEP_SUMMARY}"

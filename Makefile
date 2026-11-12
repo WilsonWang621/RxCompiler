@@ -7,8 +7,7 @@ BUILD_JOBS ?= 2
 VERBOSE ?= false
 # Directory paths below tests, joined with ':'; separate selections with ','.
 FILTER ?=
-# Default to the current frontend entrypoint. Set STAGE= for all stages.
-# Semantic tests still expose missing name resolution and type checking.
+# Default to semantic checks. Select ir for LLVM validation, or STAGE= for all stages.
 STAGE ?= semantic
 CLANG ?= clang-22
 COMPILE_TIMEOUT ?= 30
@@ -23,7 +22,7 @@ export RX_TEST_RUN = $(RUN)
 export FILTER STAGE CLANG COMPILE_TIMEOUT RUN_TIMEOUT VERBOSE
 export BUILD_JOBS
 
-.PHONY: build generate-parser test test-ast
+.PHONY: build generate-parser test test-ast test-ir-control-flow
 build:
 	@$(BUILD_COMPILER)
 
@@ -32,6 +31,9 @@ generate-parser:
 
 test:
 	@$(PYTHON) scripts/test.py
+
+test-ir-control-flow:
+	@$(MAKE) --no-print-directory test STAGE=ir FILTER=official:codegen:blocks-if-and-never,official:codegen:loops-and-jumps
 
 # Local AST suites are currently ignored by Git and may be absent in a clone.
 test-ast: build

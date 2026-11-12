@@ -2,7 +2,7 @@
 
 [English](README-EN.md) | [简体中文](README-ZH.md)
 
-使用 C++17、ANTLR 4.13.2 和 CMake 实现的 [Rx 语言](https://acmclasscourse-2025.github.io/rx-compiler-specification/)编译器，目前正在开发 AST 前端与语义分析基础设施。
+使用 C++17、ANTLR 4.13.2 和 CMake 实现的 [Rx 语言](https://acmclasscourse-2025.github.io/rx-compiler-specification/)编译器，已接入 AST 前端、语义分析和逐步扩展的 LLVM IR 生成。
 
 ## 当前进度
 
@@ -11,7 +11,8 @@
 - 已实现值／类型命名空间、名字绑定栈、作用域退出恢复和 `ScopeGuard`，以及符号信息、声明索引和语义结果表。
 - `SemanticChecker` 第一轮收集顶层声明和关联项，第二轮解析声明类型、检查函数体并求值常量。
 - `--stage ast` 构建并打印 AST；`--stage semantic` 进一步执行语义检查，诊断错误时返回 1。
-- 已接入 `--stage ir` 和部分标量表达式的 LLVM IR 生成；`config.mk` 已配置 IR 测试链路，尚未支持全部语言功能。
+- `--stage ir` 已将前端、语义模型和 LLVM IR 输出串联，支持标量表达式、引用、普通函数调用、`if`、`while`、`loop`、`return`、`break value` 和 `continue`。
+- IR 尚未支持短路 `&&`/`||`、数组、结构体构造与字段访问、方法调用、`Box`/`Vec` 和 unit 参数；结构体声明已有部分布局支持，但尚不能完整处理结构体值。
 - `--stage codegen` 保留命令行入口，当前会报告未实现并返回退出码 2；优化阶段同样尚未实现。
 
 语义测试和 IR 测试分别运行；语义检查通过不代表对应语言功能已支持 IR 生成。
@@ -20,22 +21,25 @@
 
 ```text
 src/
-  main.cpp          命令行入口与前端流程
+  main.cpp          命令行入口
+  driver.cpp        源文件、AST、语义分析与 IR 输出流程
   ast/              AST 节点、NodeId、源码范围与打印
   frontend/         ANTLR 解析树到 AST 的转换
   semantic/         符号、作用域、声明收集与语义结果
+  ir/               IR 模型、构建器、类型降低与 AST 到 IR 的生成
 grammar/            ANTLR 词法与语法定义
 generated/          已生成的 ANTLR C++ 代码
 scripts/            构建、解析器生成与测试运行器
 tests/              本地测试与用例，不放在 src/ 中
   ast/              Python AST 回归测试
   semantic/         C++ 作用域单元测试
+  ir/               可选的本地 IR 用例，由 Git 忽略
   official/         官方测试用例与 manifest
   custom/           自定义测试用例与 manifest
 target/             编译产物和测试日志
 ```
 
-`tests/official/` 是随仓库配置的官方测试子模块；`tests/ast/`、`tests/custom/`、`tests/semantic/` 等本地自写测试默认由 Git 忽略。
+`tests/` 下只跟踪官方测试子模块 `tests/official/`；本地 AST、语义、IR 和自定义测试全部保持忽略。CI 只使用官方用例，控制流回归也使用官方测试。
 
 ## 构建与运行
 
@@ -49,10 +53,13 @@ make build
 make build BUILD_JOBS=4
 ./target/compiler --stage ast path/to/program.rx
 ./target/compiler --stage semantic path/to/program.rx
+./target/compiler --stage ir path/to/program.rx -o target/program.ll
 ./target/compiler --stage ast path/to/program.rx --dump-tree
 ```
 
 构建入口为 `scripts/build.sh`，使用 Release 配置，构建目录为 `target/build`，可执行文件为 `target/compiler`。脚本会在 `.antlr/` 缺少 ANTLR C++ runtime 4.13.2 压缩包时下载并校验 SHA-256。
+
+更新源码后，直接运行 `target/compiler` 前应先执行 `make build`。测试命令默认自动构建；传入 `BUILD=` 时才复用已有可执行文件。
 
 `--dump-tree` 会先打印 ANTLR 解析树，再打印 AST。语法错误返回 1；参数错误、输入文件无法打开、AST 构建异常或未实现阶段返回 2。
 
@@ -77,8 +84,8 @@ AST 保存语法结构、节点 ID 与源码位置；语义结果通过 ID 存�
 | `src/semantic/scope.hpp` | 分开的值／类型名字绑定栈、作用域撤销日志和自动进入／退出作用域的 `ScopeGuard`。 |
 | `src/semantic/declaration_table.hpp` | 顶层名字到符号的索引，以及以 `SymbolId` 为键的函数、常量、结构体和关联项信息。 |
 | `src/semantic/semantic_model.hpp` | 持久保存声明、符号、节点语义结果及诊断。`semantic_model.cpp` 目前为空。 |
-| `src/semantic/semantic_checker.hpp`、`.cpp` | `check()` 先收集声明，再进入尚待实现的第二轮检查。 |
-| `src/semantic/type.hpp` | 预留给语义类型系统，目前为空；`TypeId` 暂时定义在 `semantic_model.hpp` 中。 |
+| `src/semantic/semantic_checker.hpp`、`.cpp` | `check()` 收集声明、解析声明类型、检查函数体并验证程序入口。 |
+| `src/semantic/type.hpp` | 定义 `TypeId`、类型种类、类型对象和共享类型表。 |
 
 `SourceSpan` 使用左闭右开区间 `[begin, end)`：行列从 1 开始，`offset` 从 0 开始、按 Unicode 码点计数，而不是 UTF-8 字节。当前位置相对于单个输入文件，不保存文件名；默认范围表示未知位置。
 
@@ -88,9 +95,9 @@ AST 保存语法结构、节点 ID 与源码位置；语义结果通过 ID 存�
 
 - `symbols`：`SymbolId -> SymbolInfo`；`declaredSymbols`：声明节点 `NodeId -> SymbolId`。
 - `resolvedSymbols`：名字使用节点 `NodeId -> SymbolId`；`expressionTypes`、`resolvedTypes` 分别保存表达式和类型引用的类型 ID。
-- `constantValues`、`expressionInfo` 预留常量值与表达式属性；`diagnostics` 保存源码范围和诊断消息。
+- `constantValues` 保存已求值的标量常量，`expressionInfo` 保存 place 与可变性属性；`diagnostics` 保存源码范围和诊断消息。
 
-目前第一轮扫描只填充 `declarations`、`symbols`、`declaredSymbols` 和 `diagnostics`，不产生未经检查的表达式结果。它先收集普通顶层声明，再处理 `impl`，使声明索引不受源码先后顺序限制。声明表持有不拥有 AST 的指针，因此对应 AST 必须比 `SemanticModel` 活得更久；退出局部作用域只恢复名字绑定，不删除模型中的符号或解析结果。
+第一轮扫描先收集普通顶层声明，再处理 `impl`，使声明索引不受源码先后顺序限制。第二轮填充已解析类型、表达式类型、常量值和表达式属性，供语义检查及 IR 生成使用。声明表持有不拥有 AST 的指针，因此对应 AST 必须比 `SemanticModel` 活得更久；退出局部作用域只恢复名字绑定，不删除模型中的符号或解析结果。
 
 ## 测试与配置
 
@@ -141,12 +148,13 @@ c++ -std=c++17 -Wall -Wextra -Wpedantic -Isrc/ast \
 ## IR 增量验证
 
 ```sh
-make test STAGE=ir FILTER=ir                 # 本地标量冒烟测试（目录存在时）
-make test STAGE=ir FILTER=official:codegen:builtin-io # CI 使用的官方冒烟测试
+make test STAGE=ir FILTER=official:codegen:builtin-io # 官方 I/O 冒烟测试
+make test-ir-control-flow                  # 官方 if/while/loop 回归用例
+make test STAGE=ir FILTER=ir                # 可选的本地标量用例
 make test STAGE=ir                          # 全部 IR 用例，包含尚未实现的功能
 ```
 
-运行器从 manifest 的 `codegen` 用例派生 IR 测试，无需修改官方 manifest。新增本地回归可放入被 Git 忽略的 `tests/ir/`，沿用 `stage: codegen` 和输入／预期输出格式。
+运行器从 manifest 的 `codegen` 用例派生 IR 测试，无需修改官方 manifest。`make test-ir-control-flow` 选择 `official:codegen:blocks-if-and-never` 和 `official:codegen:loops-and-jumps`，通过语义、IR、Clang、REIMU 流程验证分支结果、提前返回、条件重复求值、嵌套循环、break 值和 continue 目标。该目标同样支持 `COMPILER`、`RUN`、超时和 `BUILD=` 覆盖。其他官方套件可能仍需要尚未实现的功能，例如 `loop-state-merges` 当前需要短路 `||`。
 
 每个 IR 用例依次执行以下检查，失败后停止该用例，继续其他用例：
 
@@ -157,7 +165,7 @@ make test STAGE=ir                          # 全部 IR 用例，包含尚未实
 | `clang.*`、`program.s` | Clang 解析、验证并将 IR 编译为 RV32IM；失败需检查 IR 格式、类型或目标编译问题。 |
 | `run-N.*` | REIMU 执行失败、超时或实际输出与预期不一致。 |
 
-完整命令、标准输出和错误输出保存在 `target/tests/run-*/用例编号/`。`tests/ir/scalar.rx` 当前覆盖调用、整数运算、赋值、引用和移位的输出验证，以及比较指令的格式验证。每补齐一个功能，可增加相应输入／输出用例并在本地运行；CI 仅使用官方测试。
+完整命令、标准输出和错误输出保存在 `target/tests/run-*/用例编号/`。可选的本地用例（如 `tests/ir/scalar.rx`）可以复用同一流程检查调用、整数运算、赋值、引用和移位，但这些用例继续由 Git 忽略，不作为 CI 的依赖，也不应强制添加到版本管理。
 
 ## IR 运行环境
 
@@ -179,4 +187,4 @@ GitHub Actions 工作流 `.github/workflows/test.yml` 会在每次 push、Pull R
 
 提交 Code Review 时应附上对应的 GitHub Actions Run 链接，并确保 `Build compiler` 检查通过。建议在 GitHub 分支保护规则中将该检查设为合并前必需。
 
-CI 运行编译器构建、全部语义测试和 `FILTER=official:codegen:builtin-io` 的官方 IR 冒烟测试，并安装 Clang 22、xmake 和构建 REIMU。各步骤状态写入 Summary；语义、IR、REIMU 构建日志及每个用例的中间产物保留 90 天。完整官方 IR 套件尚不作为通过门槛，可在本地逐功能运行。
+CI 运行编译器构建、全部语义测试、官方 I/O 冒烟测试（`FILTER=official:codegen:builtin-io`），以及 `make test-ir-control-flow`，并安装 Clang 22、xmake 和构建 REIMU；用例只依赖官方测试。控制流测试单独记录步骤状态和日志；语义、IR、控制流、REIMU 构建日志及每个用例的中间产物保留 90 天。完整官方 IR 套件尚不作为通过门槛，可在本地逐功能运行。本次更新的本地验证记录位于 `ci/validation.md`，与远程 GitHub Actions 运行记录分别标明。

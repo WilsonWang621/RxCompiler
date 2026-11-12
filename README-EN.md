@@ -2,7 +2,7 @@
 
 [English](README-EN.md) | [简体中文](README-ZH.md)
 
-A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/) compiler implemented with C++17, ANTLR 4.13.2 and CMake. Development currently focuses on the AST frontend and semantic-analysis infrastructure.
+A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/) compiler implemented with C++17, ANTLR 4.13.2 and CMake, with an AST frontend, semantic analysis and incremental LLVM IR generation.
 
 ## Current status
 
@@ -11,7 +11,8 @@ A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/
 - Separate value/type namespaces, name binding stacks, scope-exit restoration and `ScopeGuard` are implemented, alongside symbol information, declaration indexes and semantic result tables.
 - The first `SemanticChecker` scan collects top-level declarations and associated items; the second resolves declaration types, checks function bodies and evaluates constants.
 - `--stage ast` builds and prints the AST; `--stage semantic` additionally checks semantics and exits with code 1 on diagnostics.
-- `--stage ir` emits LLVM IR for a subset of scalar expressions; `config.mk` enables the IR test pipeline. Full language support is still in progress.
+- `--stage ir` connects the frontend and semantic model to LLVM IR output. It supports scalar expressions, references, ordinary function calls, `if`, `while`, `loop`, `return`, `break value` and `continue`.
+- Short-circuit `&&`/`||`, arrays, struct construction and field access, method calls, `Box`/`Vec` and unit parameters remain unsupported in IR. Struct declarations have partial layout support; this does not imply support for struct values.
 - `--stage codegen` retains its CLI entrypoint but reports that code generation is not implemented and exits with code 2. Optimization is also not implemented.
 
 Semantic and IR tests run separately; passing semantic checks does not imply that the corresponding feature supports IR generation.
@@ -20,22 +21,25 @@ Semantic and IR tests run separately; passing semantic checks does not imply tha
 
 ```text
 src/
-  main.cpp          CLI entrypoint and frontend pipeline
+  main.cpp          CLI entrypoint
+  driver.cpp        Source, AST, semantic analysis and IR output pipeline
   ast/              AST nodes, NodeId, source spans and printing
   frontend/         ANTLR parse-tree to AST conversion
   semantic/         Symbols, scopes, declaration collection and results
+  ir/               IR model, builder, type lowering and AST-to-IR generation
 grammar/            ANTLR lexer and parser definitions
 generated/          Generated ANTLR C++ sources
 scripts/            Build, parser generation and test runner
 tests/              Local tests and fixtures, kept outside src/
   ast/              Python AST regression tests
   semantic/         C++ scope unit tests
+  ir/               Optional local IR fixtures, ignored by Git
   official/         Official fixtures and manifests
   custom/           Custom fixtures and manifests
 target/             Build artifacts and test logs
 ```
 
-`tests/official/` is the official testcase submodule configured with the repository. Locally written tests under `tests/ast/`, `tests/custom/`, and `tests/semantic/` are ignored by Git by default.
+Only the official testcase submodule `tests/official/` is tracked under `tests/`. Local AST, semantic, IR and custom tests remain ignored. CI uses official fixtures, including its control-flow regressions.
 
 ## Building and running
 
@@ -49,10 +53,13 @@ make build
 make build BUILD_JOBS=4
 ./target/compiler --stage ast path/to/program.rx
 ./target/compiler --stage semantic path/to/program.rx
+./target/compiler --stage ir path/to/program.rx -o target/program.ll
 ./target/compiler --stage ast path/to/program.rx --dump-tree
 ```
 
 `scripts/build.sh` builds in Release mode using `target/build` and writes the executable to `target/compiler`. If the ANTLR C++ runtime 4.13.2 archive is missing from `.antlr/`, the script downloads it and verifies its SHA-256 checksum.
+
+Run `make build` after source updates before invoking `target/compiler` directly. Test commands build automatically unless `BUILD=` is supplied to reuse an existing executable.
 
 `--dump-tree` prints the ANTLR parse tree before the AST. Syntax errors exit with code 1. Invalid arguments, unreadable input files, AST construction exceptions and unimplemented stages exit with code 2.
 
@@ -77,8 +84,8 @@ The AST stores syntax, node IDs and source locations. Semantic results live in e
 | `src/semantic/scope.hpp` | Separate value/type name binding stacks, scope undo logs and automatic scope entry/exit through `ScopeGuard`. |
 | `src/semantic/declaration_table.hpp` | Top-level name-to-symbol indexes and function, constant, struct and associated-item information keyed by `SymbolId`. |
 | `src/semantic/semantic_model.hpp` | Retains declarations, symbols, node semantic results and diagnostics. `semantic_model.cpp` is currently empty. |
-| `src/semantic/semantic_checker.hpp`, `.cpp` | `check()` collects declarations before entering the unimplemented second scan. |
-| `src/semantic/type.hpp` | Reserved for the semantic type system and currently empty; `TypeId` is temporarily defined in `semantic_model.hpp`. |
+| `src/semantic/semantic_checker.hpp`, `.cpp` | `check()` collects declarations, resolves their types, checks bodies and validates the program entrypoint. |
+| `src/semantic/type.hpp` | Defines `TypeId`, type kinds, type objects and the shared type table. |
 
 `SourceSpan` uses half-open ranges `[begin, end)`. Lines and columns are 1-based; `offset` is 0-based and counts Unicode code points, not UTF-8 bytes. Locations currently refer to a single input file without storing its filename. A default span denotes an unknown location.
 
@@ -88,9 +95,9 @@ The main `SemanticModel` mappings are:
 
 - `symbols`: `SymbolId -> SymbolInfo`; `declaredSymbols`: declaration-node `NodeId -> SymbolId`.
 - `resolvedSymbols`: name-use-node `NodeId -> SymbolId`; `expressionTypes` and `resolvedTypes` store type IDs for expressions and type references respectively.
-- `constantValues` and `expressionInfo` reserve space for constant values and expression properties; `diagnostics` stores source spans and diagnostic messages.
+- `constantValues` stores evaluated scalar constants; `expressionInfo` stores place and mutability properties; `diagnostics` stores source spans and diagnostic messages.
 
-The first scan currently fills only `declarations`, `symbols`, `declaredSymbols` and `diagnostics`, without producing unchecked expression results. It collects ordinary top-level declarations before processing `impl` blocks, so declaration indexes do not depend on source order. Declaration-table pointers do not own the AST, which must outlive the corresponding `SemanticModel`. Exiting a local scope restores name bindings without deleting symbols or resolved results from the model.
+The first scan collects ordinary top-level declarations before processing `impl` blocks, so declaration indexes do not depend on source order. The second scan fills resolved types, expression types, constants and expression properties for checking and IR generation. Declaration-table pointers do not own the AST, which must outlive the corresponding `SemanticModel`. Exiting a local scope restores name bindings without deleting symbols or resolved results from the model.
 
 ## Tests and configuration
 
@@ -141,12 +148,13 @@ Set `STAGE` explicitly to `semantic`, `ir`, `codegen` or `optimization`; `STAGE=
 ## Incremental IR validation
 
 ```sh
-make test STAGE=ir FILTER=ir                 # Local scalar smoke suite, when present
-make test STAGE=ir FILTER=official:codegen:builtin-io # Official smoke suite used in CI
+make test STAGE=ir FILTER=official:codegen:builtin-io # Official I/O smoke tests
+make test-ir-control-flow                  # Official if/while/loop regressions
+make test STAGE=ir FILTER=ir                # Optional local scalar fixtures
 make test STAGE=ir                          # All IR cases, including unsupported features
 ```
 
-The runner derives IR cases from manifest entries with `stage: codegen`; official manifests need no changes. Add regressions under the Git-ignored local `tests/ir/` directory using the same manifest and input/output format.
+The runner derives IR cases from manifest entries with `stage: codegen`; official manifests need no changes. `make test-ir-control-flow` selects `official:codegen:blocks-if-and-never` and `official:codegen:loops-and-jumps`, exercising branch results, early returns, repeated conditions, nested loops, break values and continue targets through the semantic, IR, Clang and REIMU pipeline. `COMPILER`, `RUN`, timeouts and `BUILD=` overrides also apply to this target. Other official suites may still require unsupported features; for example, `loop-state-merges` currently needs short-circuit `||`.
 
 Each IR case runs these checks in order. A failure stops that case while other cases continue:
 
@@ -157,7 +165,7 @@ Each IR case runs these checks in order. A failure stops that case while other c
 | `clang.*`, `program.s` | Clang parsing, verification and RV32IM lowering: inspect IR syntax, types or target compilation. |
 | `run-N.*` | REIMU execution failure, timeout or output mismatch. |
 
-Commands, stdout and stderr are retained in `target/tests/run-*/case-number/`. `tests/ir/scalar.rx` checks output for calls, integer arithmetic, assignments, references and shifts, and validates the format of comparison instructions. Extend this suite as each feature becomes available.
+Commands, stdout and stderr are retained in `target/tests/run-*/case-number/`. Optional local fixtures such as `tests/ir/scalar.rx` can check calls, integer arithmetic, assignments, references and shifts through the same pipeline. These local fixtures remain ignored and are not required by CI; do not force-add them.
 
 ## IR runtime setup
 
@@ -179,4 +187,4 @@ The GitHub Actions workflow at `.github/workflows/test.yml` checks out the offic
 
 Include the corresponding GitHub Actions run link with each code review and ensure that `Build compiler` passes. Configure that check as required in the GitHub branch protection rules.
 
-CI runs the compiler build, all semantic tests and the official `FILTER=official:codegen:builtin-io` IR smoke suite, installing Clang 22 and xmake and building REIMU. Step outcomes appear in the summary; semantic, IR and REIMU build logs and per-case artifacts are retained for 90 days. The full official IR suite is available locally as implementation progresses.
+CI runs the compiler build, all semantic tests, the official I/O smoke tests (`FILTER=official:codegen:builtin-io`) and `make test-ir-control-flow`, installing Clang 22 and xmake and building REIMU. It depends only on official fixtures. The control-flow step has a separate outcome and log in the summary and artifacts. Semantic, IR, control-flow and REIMU build logs and per-case artifacts are retained for 90 days. The full official IR suite is available locally as implementation progresses. Local verification for this update is recorded in `ci/validation.md`; it is separate from a remote GitHub Actions run.

@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-// 内置调用需要的最小表达式支持；完整运算和 place 生成仍待补充。
+// 标量表达式和控制流分发；聚合值、字段、方法调用和短路运算仍待补充。
 IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     const auto &model = *context_.model;
     if(const auto *call = dynamic_cast<const rx::ast::CallExpr *>(&expression)) return generateCall(*call);
