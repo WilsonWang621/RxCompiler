@@ -12,6 +12,7 @@
 #include "Lexer.h"
 #include "Parser.h"
 #include "ast_builder.hpp"
+#include "codegen/code_generator.hpp"
 #include "ir_generator.hpp"
 #include "semantic_checker.hpp"
 
@@ -121,14 +122,24 @@ void write_ir(const IRModule &module, const std::string &path) {
   }
 }
 
-int compile_ast(const Options &options, rx::Parser::CrateContext *tree) {
-  if (options.stage == "codegen") {
-    throw std::runtime_error("code generation is not implemented yet");
+void write_assembly(const IRModule &module, const std::string &path) {
+  CodeGenerator generator;
+  const auto assembly = generator.generate(module);
+  std::ofstream output(path);
+  if (!output) {
+    throw std::runtime_error("cannot open output file: " + path);
   }
+  output << assembly;
+  output.close();
+  if (!output) {
+    throw std::runtime_error("cannot write output file: " + path);
+  }
+}
 
+int compile_ast(const Options &options, rx::Parser::CrateContext *tree) {
   rx::frontend::ASTBuilder builder;
   auto astRoot = builder.build(tree);
-  if (options.stage != "ir") {
+  if (options.stage != "ir" && options.stage != "codegen") {
     astRoot->dump(std::cout);
   }
   if (options.stage == "ast") return 0;
@@ -141,7 +152,11 @@ int compile_ast(const Options &options, rx::Parser::CrateContext *tree) {
 
   IRGenerator generator;
   auto module = generator.generate(*astRoot, model);
-  write_ir(module, options.output);
+  if (options.stage == "ir") {
+    write_ir(module, options.output);
+  } else {
+    write_assembly(module, options.output);
+  }
   return 0;
 }
 
