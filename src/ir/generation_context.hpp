@@ -40,7 +40,7 @@ struct IRGenerationContext{ //真正的核心，拥有builder这样的构建器�
     std::unordered_map<SymbolId, IRValue> locals;   // 参数、self、局部变量
     std::unordered_map<SymbolId, IRValue> constants; // 全局和关联标量常量。
     std::unordered_map<SymbolId, IRFunction *> functions;
-    std::unordered_map<SymbolId, IRStructLayout> structs;
+    std::unordered_map<SymbolId, IRStructLayout> structs; //通过SymbolId找结构体
     std::stack<IRLoop> loops;
     SymbolId currentFunction;
 

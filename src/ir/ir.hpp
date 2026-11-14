@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ir_type.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -7,7 +9,6 @@
 #include <string>
 #include <vector>
 
-enum class IRType{Void, I32, Ptr, I1};
 enum class IROpcode{Alloca, Store, Call, Ret, Load, Add, Sub, Mul, UDiv, SDiv, URem, SRem, And, Or, Xor, Shl, LShr, AShr, ICmp, GetElementPtr, ZExt, Br};
  //Shl:shift left,LShr:logical shift left Arithmetic~,ICmp:Integer Compare,SRem:Signed Remainder ZExt:zero extension
 enum class IRComparePredicate{Eq, Ne, Sgt, Sge, Slt, Sle, Ugt, Uge, Ult, Ule};

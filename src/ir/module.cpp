@@ -6,11 +6,13 @@
 namespace{
 
 const char *typeName(IRType type){
-    switch(type){
+    switch(type.kind()){
         case IRType::Void: return "void";
         case IRType::I32: return "i32";
         case IRType::Ptr: return "ptr";
         case IRType::I1: return "i1";
+        case IRType::Unit: case IRType::Struct: case IRType::Array:
+            throw std::logic_error("IR type output is not supported yet");
     }
     throw std::logic_error("unknown IR type");
 }
