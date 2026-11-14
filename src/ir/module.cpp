@@ -1,18 +1,28 @@
 #include "module.hpp"
 
 #include <algorithm>
+#include <sstream>
 #include <stdexcept>
 
 namespace{
 
-const char *typeName(IRType type){
+void printName(std::ostream &out, const std::string &name, char prefix);
+
+std::string typeName(const IRType &type){
     switch(type.kind()){
         case IRType::Void: return "void";
         case IRType::I32: return "i32";
         case IRType::Ptr: return "ptr";
         case IRType::I1: return "i1";
-        case IRType::Unit: case IRType::Struct: case IRType::Array:
-            throw std::logic_error("IR type output is not supported yet");
+        case IRType::Unit: return "{}";
+        case IRType::Struct:{
+            if(!type.structure()) throw std::logic_error("IR struct type has no declaration");
+            std::ostringstream out;
+            printName(out, type.structure()->name, '%');
+            return out.str();
+        }
+        case IRType::Array:
+            return "[" + std::to_string(type.length()) + " x " + typeName(type.elementType()) + "]";
     }
     throw std::logic_error("unknown IR type");
 }
@@ -52,10 +62,22 @@ const char *predicateName(IRComparePredicate predicate){
     throw std::logic_error("unknown IR comparison predicate");
 }
 
-const char *alignment(IRType type){
-    if(type == IRType::I1) return "1";
-    if(type == IRType::I32 || type == IRType::Ptr) return "4";
-    throw std::logic_error("void has no storage alignment");
+std::size_t alignment(const IRType &type){
+    switch(type.kind()){
+        case IRType::I1: case IRType::Unit: return 1;
+        case IRType::I32: case IRType::Ptr: return 4;
+        case IRType::Array: return alignment(type.elementType());
+        case IRType::Struct:{
+            if(!type.structure()) throw std::logic_error("IR struct type has no declaration");
+            std::size_t result = 1;
+            for(const auto &field : type.structure()->fields){
+                result = std::max(result, alignment(field));
+            }
+            return result;
+        }
+        case IRType::Void: throw std::logic_error("void has no storage alignment");
+    }
+    throw std::logic_error("unknown IR type");
 }
 
 void printName(std::ostream &out, const std::string &name, char prefix = '\0'){
@@ -104,12 +126,19 @@ void IRModule::dump(std::ostream &out, int indent) const{
     if(indent < 0) throw std::invalid_argument("IR indentation cannot be negative");
     const std::string pad(indent, ' ');
     const auto printValue = [&out](const IRValue &value){
+        if(value.type == IRType::Void) throw std::logic_error("void is not an IR value");
         if(!value.name.empty()) printName(out, value.name, '%');
         else if(value.type == IRType::Ptr){
             if(value.bits == 0) out << "null";
             else out << "inttoptr (i32 " << std::to_string(value.bits) << " to ptr)";
+        }else if(value.type == IRType::Unit){
+            if(value.bits != 0) throw std::logic_error("invalid IR unit constant");
+            out << "zeroinitializer";
         }else{
-            if(value.type == IRType::Void || (value.type == IRType::I1 && value.bits > 1)){
+            if(value.type.kind() == IRType::Struct || value.type.kind() == IRType::Array){
+                throw std::logic_error("IR aggregate constants are not supported yet");
+            }
+            if(value.type == IRType::I1 && value.bits > 1){
                 throw std::logic_error("invalid IR constant value");
             }
             out << std::to_string(value.bits);
