@@ -16,7 +16,7 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     if(dynamic_cast<const rx::ast::UnitExpr *>(&expression)) return {};
     const auto constant = model.constantValues.find(expression.id());
     if(constant != model.constantValues.end()){
-        return {IRValue{context_.typeLowering.lowerType(constant->second.type, model), "", constant->second.bits}, false};
+        return {IRValue{context_.typeLowering.lowerStorageType(constant->second.type, model), "", constant->second.bits}, false};
     }
     if(const auto *path = dynamic_cast<const rx::ast::PathExpr *>(&expression)) return generatePath(*path);
     if(const auto *binary = dynamic_cast<const rx::ast::BinaryExpr *>(&expression)) return generateBinary(*binary);
@@ -25,6 +25,16 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(&expression)) return generateUnary(*unary);
     if(const auto *cast = dynamic_cast<const rx::ast::CastExpr *>(&expression)) return generateCast(*cast);
     throw std::runtime_error("IR expression is not implemented");
+}
+
+IRValue IRGenerator::materializeValue(const IRExprResult &result, TypeId type) const{
+    if(result.terminated) throw std::logic_error("terminated IR expression cannot produce a value");
+    const IRType lowered = context_.typeLowering.lowerStorageType(type, *context_.model);
+    if(lowered == IRType::Unit && !result.value) return IRValue{IRType::Unit, "", 0};
+    if(!result.value || result.value->type != lowered){
+        throw std::logic_error("IR expression result does not match its storage type");
+    }
+    return *result.value;
 }
 
 IRExprResult IRGenerator::generateCast(const rx::ast::CastExpr &expression){
@@ -66,8 +76,8 @@ IRExprResult IRGenerator::generatePath(const rx::ast::PathExpr &expression){
     const auto constant = context_.constants.find(symbol);
     if(constant != context_.constants.end()) return {constant->second, false};
     //otherwise 在context_.local中找它的地址，然后去load
-    const IRType type = context_.typeLowering.lowerType(model.symbolTypes.at(symbol), model);
-    if(type == IRType::Void) return {};
+    const IRType type = context_.typeLowering.lowerStorageType(model.symbolTypes.at(symbol), model);
+    if(type == IRType::Unit) return {};
     return {context_.builder.createLoad(type, context_.locals.at(symbol)), false};
 }
 
@@ -79,8 +89,7 @@ IRExprResult IRGenerator::generateCall(const rx::ast::CallExpr &expression){
     for(const auto &argument : expression.arguments()){
         const auto result = generateExpr(*argument);
         if(result.terminated) return result;
-        if(!result.value) throw std::runtime_error("IR unit arguments are not supported");
-        arguments.push_back(*result.value);
+        arguments.push_back(materializeValue(result, model.expressionTypes.at(argument->id())));
     }
     return {context_.builder.createCall(callee, std::move(arguments)), false};
 }
@@ -110,9 +119,9 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
             throw std::logic_error("IR reference operand requires a pointer");
         }
         type = model.types.get(type).elementType();
-        const IRType lowered = context_.typeLowering.lowerType(type, model);
-        // unit 没有运行时值，不能生成 load void。
-        if(lowered == IRType::Void) operand.value.reset();
+        const IRType lowered = context_.typeLowering.lowerStorageType(type, model);
+        // unit 比较只需完成操作数求值，无需读取零大小数据。
+        if(lowered == IRType::Unit) operand.value.reset();
         else operand.value = context_.builder.createLoad(lowered, *operand.value);
     };
 
@@ -244,13 +253,7 @@ IRExprResult IRGenerator::generateAssignment(const rx::ast::AssignExpr &expressi
     const auto place = generatePlace(expression.target());
     if(!place) return {{}, true};
 
-    if(!value.value){
-        throw std::runtime_error("IR assignment requires a value");
-    }
-    const IRType type = context_.typeLowering.lowerType(place->type, *context_.model);
-    if(value.value->type != type) throw std::runtime_error("IR assignment value type does not match target");
-
-    context_.builder.createStore(*value.value, place->address);
+    context_.builder.createStore(materializeValue(value, place->type), place->address);
     return {};
 }
 
@@ -267,12 +270,12 @@ IRExprResult IRGenerator::generateCompoundAssignment(const rx::ast::CompoundAssi
 
     const auto &model = *context_.model;
     const auto &target = model.types.get(place->type);
-    const IRType type = context_.typeLowering.lowerType(place->type, model);
+    const IRType type = context_.typeLowering.lowerStorageType(place->type, model);
     IRValue right = *value.value;
     const auto &rightInfo = model.types.get(model.expressionTypes.at(expression.value().id()));
     // 复合赋值的右侧允许一层共享引用，先读取其指向的标量。
     if(rightInfo.kind() == TypeKind::Reference && !rightInfo.isMutable()){
-        right = context_.builder.createLoad(context_.typeLowering.lowerType(rightInfo.elementType(), model), right);
+        right = context_.builder.createLoad(context_.typeLowering.lowerStorageType(rightInfo.elementType(), model), right);
     }
     if(right.type != type) throw std::runtime_error("IR compound assignment value type does not match target");
 
@@ -315,12 +318,9 @@ IRExprResult IRGenerator::generateUnary(const rx::ast::UnaryExpr &expression){
 
         const auto value = generateExpr(operand);
         if(value.terminated) return value;
-        if(!value.value){
-            throw std::runtime_error("IR borrowing this value is not supported");
-        }
-
-        const auto address = context_.builder.createAlloca(value.value->type);
-        context_.builder.createStore(*value.value, address);
+        const auto stored = materializeValue(value, model.expressionTypes.at(operand.id()));
+        const auto address = context_.builder.createAlloca(stored.type);
+        context_.builder.createStore(stored, address);
         return {address, false};
     }
 
@@ -328,8 +328,8 @@ IRExprResult IRGenerator::generateUnary(const rx::ast::UnaryExpr &expression){
         const auto place = generatePlace(expression);
         if(!place) return {{}, true};
 
-        const IRType type = context_.typeLowering.lowerType(place->type, model);
-        if(type == IRType::Void) return {};
+        const IRType type = context_.typeLowering.lowerStorageType(place->type, model);
+        if(type == IRType::Unit) return {};
 
         return{
             context_.builder.createLoad(type, place->address),
@@ -347,7 +347,7 @@ IRExprResult IRGenerator::generateUnary(const rx::ast::UnaryExpr &expression){
     const auto &operandType = model.types.get(model.expressionTypes.at(operand.id()));
 
     if(operandType.kind() == TypeKind::Reference && !operandType.isMutable()){
-        const IRType type = context_.typeLowering.lowerType(operandType.elementType(), model);
+        const IRType type = context_.typeLowering.lowerStorageType(operandType.elementType(), model);
         scalar = context_.builder.createLoad(type, scalar);
     }
 

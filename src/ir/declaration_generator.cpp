@@ -42,26 +42,45 @@ void IRGenerator::declareItem(const rx::ast::Item &item){
     throw std::runtime_error("unsupported item in IR declaration pass");
 }
 
+void IRGenerator::predeclareStructs(const rx::ast::StructItem &Item){
+    if(!context_.model) throw std::logic_error("IR generation has no semantic model");
+    
+    const auto &model = *context_.model;
+    const SymbolId symbol = model.declaredSymbols.at(Item.id());
+    if(context_.structs.count(symbol)){
+        throw std::logic_error("IR struct is already declared");
+    }
+
+    IRStructLayout layout;
+    layout.structure = &context_.builder.declareStruct(mangleSymbol(symbol, model), {});
+    context_.typeLowering.registerStruct(symbol, *layout.structure);
+    context_.structs.emplace(symbol, std::move(layout));
+}
+
 void IRGenerator::declareStruct(const rx::ast::StructItem &item){
     if(!context_.model) throw std::logic_error("IR generation has no semantic model");
     const auto &model = *context_.model;
     const SymbolId symbol = model.declaredSymbols.at(item.id());
-    if(context_.structs.count(symbol)) throw std::logic_error("IR struct is already declared");
+    auto &layout = context_.structs.at(symbol);
 
     std::vector<IRType> fields;
     fields.reserve(item.fields().size());
-    IRStructLayout layout;
 
     for(const auto &field : item.fields()){
         const TypeId type = model.resolvedTypes.at(field->type().id());
-        fields.push_back(context_.typeLowering.lowerType(type, model));
+
+        const IRType lowered = context_.typeLowering.lowerStorageType(type, model);
+        if(lowered == IRType::Void) {
+            throw std::logic_error("lowered type cannot be void");
+        }
+        fields.push_back(lowered);
+
         if(!layout.fieldIndices.emplace(field->name(), fields.size() - 1).second){
             throw std::logic_error("duplicate field in IR struct: " + field->name());
         }
     }
-    // Module 拥有实体；Context 只保存查找映射，不改变 Builder 插入位置。
-    layout.structure = &context_.builder.declareStruct(mangleSymbol(symbol, model), std::move(fields));
-    context_.structs.emplace(symbol, std::move(layout));
+    
+    layout.structure->fields = std::move(fields);
 }
 
 std::string IRGenerator::mangleSymbol(SymbolId symbol, const SemanticModel &model) const{
@@ -78,7 +97,7 @@ void IRGenerator::declareConstant(const rx::ast::ConstItem &item){
     const auto &value = model.constantValues.at(item.value().id());
 
     IRValue constant; // name 保持为空，表示立即数。
-    constant.type = context_.typeLowering.lowerType(value.type, model);
+    constant.type = context_.typeLowering.lowerStorageType(value.type, model);
     constant.bits = value.bits;
 
     context_.constants.emplace(symbol, std::move(constant));
@@ -94,7 +113,7 @@ void IRGenerator::declareFunction(const rx::ast::FunctionItem &function){
     std::vector<IRParameter> parameters;
     parameters.reserve(declaration.parameterTypes.size() + (declaration.receiverType.has_value() ? 1 : 0));
     const auto addParameter = [&](TypeId type){
-        parameters.push_back({context_.typeLowering.lowerType(type, model), "p" + std::to_string(parameters.size())});
+        parameters.push_back({context_.typeLowering.lowerStorageType(type, model), "p" + std::to_string(parameters.size())});
     };
     // self 位于首位
     if(declaration.receiverType.has_value()) addParameter(*declaration.receiverType);

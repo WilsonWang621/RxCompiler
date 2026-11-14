@@ -25,6 +25,11 @@ IRModule IRGenerator::generate(const rx::ast::Crate &crate, const SemanticModel 
     try{
         declareBuiltins();
         for(const auto &item : crate.items()){
+            if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
+                predeclareStructs(*structure);
+            }
+        }
+        for(const auto &item : crate.items()){
             declareItem(*item);
         }
         for(const auto &item : crate.items()){

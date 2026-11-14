@@ -24,9 +24,10 @@ IRExprResult IRGenerator::generateStmt(const rx::ast::Stmt &stmt){
 
 void IRGenerator::generateLet(const rx::ast::LetStmt &stmt){
     const auto result = generateExpr(stmt.initializer());
-    if(result.terminated || !result.value) return;
+    if(result.terminated) return;
     const SymbolId symbol = context_.model->declaredSymbols.at(stmt.id());
-    const auto address = context_.builder.createAlloca(result.value->type);
-    context_.builder.createStore(*result.value, address);
+    const auto value = materializeValue(result, context_.model->symbolTypes.at(symbol));
+    const auto address = context_.builder.createAlloca(value.type);
+    context_.builder.createStore(value, address);
     context_.locals.emplace(symbol, address);
 }

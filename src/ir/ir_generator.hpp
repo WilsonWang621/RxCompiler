@@ -14,6 +14,7 @@ private:
     // declaration_generator.cpp：第一遍登记类型、常量和完整函数签名，同semantic
     void declareItem(const rx::ast::Item &item);
     void declareBuiltins();
+    void predeclareStructs(const rx::ast::StructItem &item);
     void declareStruct(const rx::ast::StructItem &item);
     void declareConstant(const rx::ast::ConstItem &item);
     void declareFunction(const rx::ast::FunctionItem &function);
@@ -31,6 +32,7 @@ private:
 
     // expression_generator
     IRExprResult generateExpr(const rx::ast::Expr &expression);
+    IRValue materializeValue(const IRExprResult &result, TypeId type) const; // 存储或传参时，将无值的 unit 结果表示为 {}。
     std::optional<IRPlace> generatePlace(const rx::ast::Expr &expression);  //找到存储地址
     std::optional<IRPlace> generateFieldPlace(const rx::ast::FieldExpr &expression);
     IRExprResult generatePath(const rx::ast::PathExpr &expression);

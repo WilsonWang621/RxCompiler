@@ -8,6 +8,7 @@ void IRGenerationContext::reset(IRModule &module, const SemanticModel &model){
 
 void IRGenerationContext::clear(){
     builder.reset();
+    typeLowering.clear();
     locals.clear();
     constants.clear();
     functions.clear();

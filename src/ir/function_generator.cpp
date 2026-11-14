@@ -42,7 +42,7 @@ void IRGenerator::bindParameters(const rx::ast::FunctionItem &function){
     const auto bindParameter = [&](const rx::ast::FunctionParam &parameter){
         const SymbolId symbol = model.declaredSymbols.at(parameter.id());
         const auto &incoming = irFunction.parameters.at(index++);
-        const IRType type = context_.typeLowering.lowerType(model.symbolTypes.at(symbol), model);
+        const IRType type = context_.typeLowering.lowerStorageType(model.symbolTypes.at(symbol), model);
         if(type != incoming.type) throw std::logic_error("IR parameter type does not match semantic type");
         const IRValue address = context_.builder.createAlloca(type);
         context_.builder.createStore(IRValue{type, incoming.name, 0}, address);
