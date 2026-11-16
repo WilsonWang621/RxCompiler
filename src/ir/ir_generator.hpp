@@ -30,11 +30,13 @@ private:
     IRExprResult generateStmt(const rx::ast::Stmt &stmt);
     IRExprResult generateBlock(const rx::ast::BlockExpr &block); // 语句依次执行；终结后停止；尾表达式的值交给 generateExpr。
 
+    IRExprResult generateStruct(const rx::ast::StructExpr &expression);
+
     // expression_generator
     IRExprResult generateExpr(const rx::ast::Expr &expression);
     IRValue materializeValue(const IRExprResult &result, TypeId type) const; // 存储或传参时，将无值的 unit 结果表示为 {}。
     std::optional<IRPlace> generatePlace(const rx::ast::Expr &expression);  //找到存储地址
-    std::optional<IRPlace> generateFieldPlace(const rx::ast::FieldExpr &expression);
+    std::optional<IRPlace> generateFieldPlace(const rx::ast::FieldExpr &expression); //找到 s.x 的地址
     IRExprResult generatePath(const rx::ast::PathExpr &expression);
     IRExprResult generateBinary(const rx::ast::BinaryExpr &expression);
     // 实参按源码顺序求值；方法调用还需按语义签名调整并传入 self。

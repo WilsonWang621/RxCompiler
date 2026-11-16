@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-// 标量表达式和控制流分发；聚合值、字段和方法调用仍待补充。
+// 标量、结构体构造和控制流分发；数组、字段和方法调用仍待补充。
 IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     const auto &model = *context_.model;
     if(const auto *call = dynamic_cast<const rx::ast::CallExpr *>(&expression)) return generateCall(*call);
@@ -24,6 +24,13 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     if(const auto *compoundAssignment = dynamic_cast<const rx::ast::CompoundAssignExpr *>(&expression)) return generateCompoundAssignment(*compoundAssignment);
     if(const auto *unary = dynamic_cast<const rx::ast::UnaryExpr *>(&expression)) return generateUnary(*unary);
     if(const auto *cast = dynamic_cast<const rx::ast::CastExpr *>(&expression)) return generateCast(*cast);
+    if(const auto *structure = dynamic_cast<const rx::ast::StructExpr *>(&expression)) return generateStruct(*structure);
+    if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(&expression)){
+        const auto place = generateFieldPlace(*field);
+        if(!place) return {{}, true};
+        const IRType type = context_.typeLowering.lowerStorageType(place->type, model);
+        return {context_.builder.createLoad(type, place->address), false};
+    }
     throw std::runtime_error("IR expression is not implemented");
 }
 
@@ -79,6 +86,28 @@ IRExprResult IRGenerator::generatePath(const rx::ast::PathExpr &expression){
     const IRType type = context_.typeLowering.lowerStorageType(model.symbolTypes.at(symbol), model);
     if(type == IRType::Unit) return {};
     return {context_.builder.createLoad(type, context_.locals.at(symbol)), false};
+}
+
+IRExprResult IRGenerator::generateStruct(const rx::ast::StructExpr &expression){
+    const auto &model = *context_.model;
+    const SymbolId symbol = model.resolvedSymbols.at(expression.id());
+    const auto &layout = context_.structs.at(symbol);
+    const auto &declaration = model.declarations.structs.at(symbol);
+    if(!layout.structure) throw std::logic_error("IR struct layout is missing");
+
+    auto &builder = context_.builder;
+    const IRType type = IRType::structure(*layout.structure);
+    const IRValue address = builder.createEntryAlloca(type);
+    // 求值遵循源码顺序，字段地址使用声明布局中的下标。
+    for(const auto &field : expression.fields()){
+        const auto result = generateExpr(field->value());
+        if(result.terminated) return result;
+
+        const auto value = materializeValue(result, declaration.fieldTypes.at(field->name()));
+        const auto fieldAddress = builder.createFieldAddress(*layout.structure, address, layout.fieldIndices.at(field->name()));
+        builder.createStore(value, fieldAddress);
+    }
+    return {builder.createLoad(type, address), false};
 }
 
 IRExprResult IRGenerator::generateCall(const rx::ast::CallExpr &expression){
@@ -243,6 +272,10 @@ std::optional<IRPlace> IRGenerator::generatePlace(const rx::ast::Expr &expressio
             };
         }
     }
+
+    if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(&expression)){
+        return generateFieldPlace(*field);
+    }
     throw std::runtime_error("IR place expression is not implemented");
 }
 
@@ -255,6 +288,57 @@ IRExprResult IRGenerator::generateAssignment(const rx::ast::AssignExpr &expressi
 
     context_.builder.createStore(materializeValue(value, place->type), place->address);
     return {};
+}
+
+std::optional<IRPlace> IRGenerator::generateFieldPlace(const rx::ast::FieldExpr &expression){
+    const auto &model = *context_.model;
+    auto &builder = context_.builder;
+    const auto &base = expression.base();
+
+    IRPlace place;
+    if(model.expressionInfo.at(base.id()).isPlace){
+        const auto result = generatePlace(base);
+        if(!result) return std::nullopt;
+        place = *result;
+    }else{
+        // 临时值只求值一次，保存后再访问其中的字段。
+        const auto result = generateExpr(base);
+        if(result.terminated) return std::nullopt;
+
+        const TypeId type = model.expressionTypes.at(base.id());
+        const auto value = materializeValue(result, type);
+        const auto address = builder.createEntryAlloca(value.type);
+        builder.createStore(value, address);
+        place = IRPlace{address, type};
+    }
+
+    // place.address 指向存储引用的槽；load 后得到引用指向的地址。
+    while(model.types.get(place.type).kind() == TypeKind::Reference){
+        const TypeId elementType = model.types.get(place.type).elementType();
+        place.address = builder.createLoad(IRType::Ptr, place.address);
+        place.type = elementType;
+    }
+
+    const auto &owner = model.types.get(place.type);
+    if(owner.kind() == TypeKind::Box){
+        throw std::runtime_error("IR Box field access is not implemented yet");
+    }
+    if(owner.kind() != TypeKind::Struct){
+        throw std::logic_error("IR field base is not a struct");
+    }
+
+    const auto &layout = context_.structs.at(owner.symbol());
+    if(!layout.structure){
+        throw std::logic_error("IR struct layout is missing");
+    }
+
+    const std::size_t fieldIndex = layout.fieldIndices.at(expression.field());
+    const auto address = builder.createFieldAddress(*layout.structure, place.address, fieldIndex);
+
+    return IRPlace{
+        address,
+        model.expressionTypes.at(expression.id())
+    };
 }
 
 IRExprResult IRGenerator::generateCompoundAssignment(const rx::ast::CompoundAssignExpr &expression){

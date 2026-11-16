@@ -133,6 +133,21 @@ IRValue IRBuilder::createLoad(IRType type, IRValue address){
     return result;
 }
 
+IRValue IRBuilder::createFieldAddress(const IRStruct &structure, IRValue address, std::size_t fieldIndex){
+    if(address.type != IRType::Ptr || address.name.empty()){
+        throw std::invalid_argument("field address requires a local pointer");
+    }
+    if(fieldIndex >= structure.fields.size()) throw std::invalid_argument("IR struct field index is out of range");
+
+    IRValue result{IRType::Ptr, "v" + std::to_string(nextValueId_), 0};
+    IRInstruction instruction{IROpcode::GetElementPtr, result, {std::move(address)}, {}};
+    instruction.structure = &structure;
+    instruction.fieldIndex = fieldIndex;
+    append(std::move(instruction));
+    ++nextValueId_;
+    return result;
+}
+
 std::optional<IRValue> IRBuilder::createCall(const IRFunction &callee, std::vector<IRValue> arguments){
     if(!ownsFunction(callee)) throw std::invalid_argument("callee does not belong to the current module");
     if(arguments.size() != callee.parameters.size()) throw std::invalid_argument("call argument count does not match");
