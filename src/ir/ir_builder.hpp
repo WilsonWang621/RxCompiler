@@ -25,6 +25,7 @@ public:
     bool isTerminated() const; // 查询当前块；未设置插入位置时抛出异常。
 
     IRValue createAlloca(IRType type); // I1/I32/Ptr 的栈槽，返回 Ptr。
+    IRValue createEntryAlloca(IRType type); // 插入函数入口，不改变当前插入位置，避免循环中重复分配。
     IRValue createLoad(IRType type, IRValue address);
     void createStore(IRValue value, IRValue address); // 按 value.type 写入。
     IRValue createBinary(IROpcode opcode, IRValue left, IRValue right); 

@@ -48,6 +48,7 @@ private:
 
     // control_flow_generator.cpp：控制流表达式。
     IRExprResult generateReturn(const rx::ast::ReturnExpr &expression);
+    IRExprResult generateLogical(const rx::ast::BinaryExpr &expression);
     IRExprResult generateIf(const rx::ast::IfExpr &expression);
     IRExprResult generateContinue(const rx::ast::ContinueExpr &expression);
     IRExprResult generateBreak(const rx::ast::BreakExpr &expression);

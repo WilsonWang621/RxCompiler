@@ -8,6 +8,40 @@ IRExprResult IRGenerator::generateReturn(const rx::ast::ReturnExpr &expression){
     return {{}, true};
 }
 
+IRExprResult IRGenerator::generateLogical(const rx::ast::BinaryExpr &expression){
+    const auto left = generateExpr(expression.left());
+    if(left.terminated) return left;
+    if(!left.value || left.value->type != IRType::I1){
+        throw std::logic_error("IR logical left operand requires an i1 value");
+    }
+
+    auto &builder = context_.builder;
+    const bool isAnd = expression.op() == "&&";
+    const IRValue address = builder.createEntryAlloca(IRType::I1);
+    // 每次求值先保存短路结果；只有右侧正常结束时才覆盖它。
+    builder.createStore(IRValue{IRType::I1, "", isAnd ? 0u : 1u}, address);
+
+    const std::string suffix = std::to_string(basicBlockId++);
+    auto &rightBlock = builder.createBlock("logical.rhs." + suffix);
+    auto &mergeBlock = builder.createBlock("logical.end." + suffix);
+    if(isAnd) builder.createIf(*left.value, rightBlock, mergeBlock);
+    else builder.createIf(*left.value, mergeBlock, rightBlock);
+
+    builder.setInsertPoint(rightBlock);
+    const auto right = generateExpr(expression.right());
+    if(!right.terminated){
+        if(!right.value || right.value->type != IRType::I1){
+            throw std::logic_error("IR logical right operand requires an i1 value");
+        }
+        // 嵌套表达式可能改变插入位置，从右侧实际结束的块连接合流块。
+        builder.createStore(*right.value, address);
+        builder.createBranch(mergeBlock);
+    }
+
+    builder.setInsertPoint(mergeBlock);
+    return {builder.createLoad(IRType::I1, address), false};
+}
+
 IRExprResult IRGenerator::generateIf(const rx::ast::IfExpr &expression){
     auto condition = generateExpr(expression.condition());
     if(condition.terminated) return condition;

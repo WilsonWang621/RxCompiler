@@ -103,6 +103,19 @@ IRValue IRBuilder::createAlloca(IRType type){
     return address;
 }
 
+IRValue IRBuilder::createEntryAlloca(IRType type){
+    if(type == IRType::Void) throw std::invalid_argument("alloca requires a value type");
+    if(!function_ || function_->blocks.empty()) throw std::logic_error("IR function has no entry block");
+
+    IRValue address{IRType::Ptr, "v" + std::to_string(nextValueId_), 0};
+    IRInstruction instruction{IROpcode::Alloca, address, {}, {}};
+    instruction.allocatedType = type;
+    auto &instructions = function_->blocks.front()->instructions;
+    instructions.insert(instructions.begin(), std::move(instruction));
+    ++nextValueId_;
+    return address;
+}
+
 void IRBuilder::createStore(IRValue value, IRValue address){
     if(value.type == IRType::Void || address.type != IRType::Ptr || address.name.empty()){
         throw std::invalid_argument("store requires a value and a local pointer");
