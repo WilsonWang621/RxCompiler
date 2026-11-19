@@ -30,6 +30,12 @@ private:
     IRExprResult generateStmt(const rx::ast::Stmt &stmt);
     IRExprResult generateBlock(const rx::ast::BlockExpr &block); // 语句依次执行；终结后停止；尾表达式的值交给 generateExpr。
 
+    // array_generator.cpp：数组构造与索引
+    IRValue materializeArrayElement(const IRExprResult &result, TypeId sourceType, TypeId targetType); //处理解引用等元素类型转化
+    IRExprResult generateArray(const rx::ast::ArrayExpr &expression);
+    IRExprResult generateRepeatedArray(const rx::ast::ArrayRepeatExpr &expression);
+    std::optional<IRPlace> generateIndexPlace(const rx::ast::IndexExpr &expression);
+
     IRExprResult generateStruct(const rx::ast::StructExpr &expression);
 
     // expression_generator

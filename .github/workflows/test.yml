@@ -73,6 +73,13 @@ jobs:
           set -o pipefail
           make test-ir-control-flow VERBOSE=true BUILD= 2>&1 | tee target/ci/control-flow.log
 
+      - name: Run IR array regressions
+        id: arrays
+        shell: bash
+        run: |
+          set -o pipefail
+          make test STAGE=ir FILTER=official:codegen:structs-and-fields,official:codegen:aggregate-arguments-and-reference-fields,official:codegen:calls-recursion-and-abi,official:codegen:comprehensive-large-frame VERBOSE=true BUILD= 2>&1 | tee target/ci/arrays.log
+
       - name: Write CI summary
         if: always()
         shell: bash
@@ -82,6 +89,7 @@ jobs:
           REIMU_OUTCOME: ${{ steps.reimu.outcome }}
           IR_OUTCOME: ${{ steps.ir.outcome }}
           CONTROL_FLOW_OUTCOME: ${{ steps.control_flow.outcome }}
+          ARRAYS_OUTCOME: ${{ steps.arrays.outcome }}
         run: |
           {
             echo '## Rx compiler CI record'
@@ -96,6 +104,7 @@ jobs:
             printf '| REIMU build | `%s` |\n' "${REIMU_OUTCOME}"
             printf '| IR smoke tests | `%s` |\n' "${IR_OUTCOME}"
             printf '| IR control-flow regressions | `%s` |\n' "${CONTROL_FLOW_OUTCOME}"
+            printf '| IR array regressions | `%s` |\n' "${ARRAYS_OUTCOME}"
             if [ -f target/ci/semantic.log ]; then
               echo
               echo '```text'
@@ -112,6 +121,12 @@ jobs:
               echo
               echo '```text'
               tail -n 3 target/ci/control-flow.log
+              echo '```'
+            fi
+            if [ -f target/ci/arrays.log ]; then
+              echo
+              echo '```text'
+              tail -n 3 target/ci/arrays.log
               echo '```'
             fi
           } >> "${GITHUB_STEP_SUMMARY}"

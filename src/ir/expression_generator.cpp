@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-// 标量、结构体构造和控制流分发；数组、字段和方法调用仍待补充。
+// 标量、数组、结构体和控制流分发；方法调用仍待补充。
 IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     const auto &model = *context_.model;
     if(const auto *call = dynamic_cast<const rx::ast::CallExpr *>(&expression)) return generateCall(*call);
@@ -29,6 +29,14 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
         const auto place = generateFieldPlace(*field);
         if(!place) return {{}, true};
         const IRType type = context_.typeLowering.lowerStorageType(place->type, model);
+        return {context_.builder.createLoad(type, place->address), false};
+    }
+    if(const auto *array = dynamic_cast<const rx::ast::ArrayExpr *>(&expression)) return generateArray(*array);
+    if(const auto *array = dynamic_cast<const rx::ast::ArrayRepeatExpr *>(&expression)) return generateRepeatedArray(*array);
+    if(const auto *index = dynamic_cast<const rx::ast::IndexExpr *>(&expression)){
+        const auto place = generateIndexPlace(*index);
+        if(!place) return {{}, true};
+        const IRType type = context_.typeLowering.lowerStorageType(place->type, *context_.model);
         return {context_.builder.createLoad(type, place->address), false};
     }
     throw std::runtime_error("IR expression is not implemented");
@@ -275,6 +283,9 @@ std::optional<IRPlace> IRGenerator::generatePlace(const rx::ast::Expr &expressio
 
     if(const auto *field = dynamic_cast<const rx::ast::FieldExpr *>(&expression)){
         return generateFieldPlace(*field);
+    }
+    if(const auto *index = dynamic_cast<const rx::ast::IndexExpr *>(&expression)){
+        return generateIndexPlace(*index);
     }
     throw std::runtime_error("IR place expression is not implemented");
 }

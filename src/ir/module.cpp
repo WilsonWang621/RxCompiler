@@ -242,13 +242,20 @@ void IRModule::dump(std::ostream &out, int indent) const{
                         out << " to " << typeName(instruction.result.value().type);
                         break;
                     case IROpcode::GetElementPtr:
-                        if(!instruction.structure) throw std::logic_error("IR field address has no struct type");
-                        instruction.structure->fields.at(instruction.fieldIndex);
                         out << "getelementptr ";
-                        printName(out, instruction.structure->name, '%');
-                        out << ", ";
-                        printTypedValue(instruction.operands.at(0));
-                        out << ", i32 0, i32 " << std::to_string(instruction.fieldIndex);
+                        if(instruction.arrayType.kind() == IRType::Array){
+                            out << typeName(instruction.arrayType) << ", ";
+                            printTypedValue(instruction.operands.at(0));
+                            out << ", i32 0, ";
+                            printTypedValue(instruction.operands.at(1));
+                        }else{
+                            if(!instruction.structure) throw std::logic_error("IR field address has no struct type");
+                            instruction.structure->fields.at(instruction.fieldIndex);
+                            printName(out, instruction.structure->name, '%');
+                            out << ", ";
+                            printTypedValue(instruction.operands.at(0));
+                            out << ", i32 0, i32 " << std::to_string(instruction.fieldIndex);
+                        }
                         break;
                     case IROpcode::Call:
                         out << "call " << typeName(instruction.result ? instruction.result->type : IRType::Void) << ' ';

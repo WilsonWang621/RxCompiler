@@ -41,6 +41,7 @@ struct IRInstruction{
     const IRStruct *structure = nullptr; // 仅结构体 GEP 使用，由 Module 拥有。
     std::size_t fieldIndex = 0; // 按 structure->fields 索引。
     std::vector<IRBasicBlock *> destination = {}; //br 跳转目标，由 IRFunction 拥有。
+    IRType arrayType = IRType::Void; // 数组 GEP 的源类型；operands 为地址和下标。
 };
 
 struct IRBasicBlock{
