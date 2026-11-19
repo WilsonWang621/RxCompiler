@@ -7,7 +7,7 @@ IRExprResult IRGenerator::generateBlock(const rx::ast::BlockExpr &block){
         const auto result = generateStmt(*statement);
         if(result.terminated) return result;
     }
-    return block.tail() ? generateExpr(*block.tail()) : IRExprResult{};
+    return block.tail() ? generateCoercedExpr(*block.tail()) : IRExprResult{};
 }
 
 IRExprResult IRGenerator::generateStmt(const rx::ast::Stmt &stmt){
@@ -23,7 +23,7 @@ IRExprResult IRGenerator::generateStmt(const rx::ast::Stmt &stmt){
 }
 
 void IRGenerator::generateLet(const rx::ast::LetStmt &stmt){
-    const auto result = generateExpr(stmt.initializer());
+    const auto result = generateCoercedExpr(stmt.initializer());
     if(result.terminated) return;
     const SymbolId symbol = context_.model->declaredSymbols.at(stmt.id());
     const auto value = materializeValue(result, context_.model->symbolTypes.at(symbol));

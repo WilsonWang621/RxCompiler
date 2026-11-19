@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-// 标量、数组、结构体和控制流分发；方法调用仍待补充。
+// 标量、数组、结构体、调用和控制流表达式分发。
 IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
     const auto &model = *context_.model;
     if(const auto *call = dynamic_cast<const rx::ast::CallExpr *>(&expression)) return generateCall(*call);
@@ -39,6 +39,7 @@ IRExprResult IRGenerator::generateExpr(const rx::ast::Expr &expression){
         const IRType type = context_.typeLowering.lowerStorageType(place->type, *context_.model);
         return {context_.builder.createLoad(type, place->address), false};
     }
+    if(const auto method = dynamic_cast<const rx::ast::MethodCallExpr *>(&expression)) return generateMethodCall(*method);
     throw std::runtime_error("IR expression is not implemented");
 }
 
@@ -50,6 +51,74 @@ IRValue IRGenerator::materializeValue(const IRExprResult &result, TypeId type) c
         throw std::logic_error("IR expression result does not match its storage type");
     }
     return *result.value;
+}
+
+IRExprResult IRGenerator::generateCoercedExpr(const rx::ast::Expr &expression){
+    const auto result = generateExpr(expression);
+    const auto plan = context_.model->coercions.find(expression.id());
+    return plan == context_.model->coercions.end() ? result : applyCoercion(result, plan->second);
+}
+
+IRExprResult IRGenerator::applyCoercion(const IRExprResult &result, const CoercionPlan &plan){
+    if(result.terminated || plan.kind == CoercionKind::Identity) return result;
+    if(plan.kind == CoercionKind::Never) throw std::logic_error("IR never coercion requires terminated control flow");
+    const auto value = materializeValue(result, plan.sourceType);
+    const auto place = applyDereferences({value, context_.model->types.get(plan.sourceType).elementType()}, plan.dereferences);
+    return {place.address, false};
+}
+
+IRPlace IRGenerator::applyDereferences(IRPlace place, const std::vector<DereferenceStep> &steps){
+    for(const auto &step : steps){
+        if(place.type != step.sourceType) throw std::logic_error("IR dereference plan type mismatch");
+        place.address = context_.builder.createLoad(IRType::Ptr, place.address);
+        place.type = step.targetType;
+    }
+    return place;
+}
+
+std::optional<IRPlace> IRGenerator::generatePlaceOrTemporary(const rx::ast::Expr &expression){
+    if(context_.model->expressionInfo.at(expression.id()).isPlace) return generatePlace(expression);
+    const auto result = generateExpr(expression);
+    if(result.terminated) return std::nullopt;
+    const TypeId type = context_.model->expressionTypes.at(expression.id());
+    const auto value = materializeValue(result, type);
+    const auto address = context_.builder.createEntryAlloca(value.type);
+    context_.builder.createStore(value, address);
+    return IRPlace{address, type};
+}
+
+IRExprResult IRGenerator::generateReceiver(const rx::ast::Expr &expression, const ReceiverAdjustment &adjustment){
+    const auto source = generatePlaceOrTemporary(expression);
+    if(!source) return {{}, true};
+    const auto place = applyDereferences(*source, adjustment.dereferences);
+    if(adjustment.borrow != BorrowKind::None) return {place.address, false};
+    return {context_.builder.createLoad(context_.typeLowering.lowerStorageType(adjustment.targetType, *context_.model), place.address), false};
+}
+
+IRExprResult IRGenerator::generateMethodCall(const rx::ast::MethodCallExpr &expression){
+    const auto &call = context_.model->resolvedCalls.at(expression.id());
+    const auto receiver = generateReceiver(expression.receiver(), call.receiver.value());
+    if(receiver.terminated) return receiver;
+    std::vector<IRValue> arguments{materializeValue(receiver, call.parameterTypes.front())};
+    for(const auto &argument : expression.arguments()){
+        const auto result = generateCoercedExpr(*argument);
+        if(result.terminated) return result;
+        arguments.push_back(materializeValue(result, call.parameterTypes.at(arguments.size())));
+    }
+    return emitResolvedCall(call, std::move(arguments));
+}
+
+IRExprResult IRGenerator::emitResolvedCall(const ResolvedCall &call, std::vector<IRValue> arguments){
+    if(call.target.builtin != BuiltinOperation::None) return emitBuiltinCall(call, std::move(arguments));
+    return {context_.builder.createCall(*context_.functions.at(call.target.symbol), std::move(arguments)), false};
+}
+
+IRExprResult IRGenerator::emitBuiltinCall(const ResolvedCall &call, std::vector<IRValue> arguments){
+    if(!call.target.ownerType.value) return {context_.builder.createCall(*context_.functions.at(call.target.symbol), std::move(arguments)), false};
+    if(call.target.builtin == BuiltinOperation::ArrayLen) return {IRValue{IRType::I32, "", context_.model->types.get(call.target.ownerType).length()}, false};
+    if(call.target.builtin == BuiltinOperation::Clone && call.returnType == context_.model->types.builtin(TypeKind::Unit)) return {};
+    if(call.target.builtin == BuiltinOperation::Clone) return {context_.builder.createLoad(context_.typeLowering.lowerStorageType(call.returnType, *context_.model), arguments.at(0)), false};
+    throw std::runtime_error("IR container builtin is not implemented yet");
 }
 
 IRExprResult IRGenerator::generateCast(const rx::ast::CastExpr &expression){
@@ -108,7 +177,7 @@ IRExprResult IRGenerator::generateStruct(const rx::ast::StructExpr &expression){
     const IRValue address = builder.createEntryAlloca(type);
     // 求值遵循源码顺序，字段地址使用声明布局中的下标。
     for(const auto &field : expression.fields()){
-        const auto result = generateExpr(field->value());
+        const auto result = generateCoercedExpr(field->value());
         if(result.terminated) return result;
 
         const auto value = materializeValue(result, declaration.fieldTypes.at(field->name()));
@@ -120,15 +189,14 @@ IRExprResult IRGenerator::generateStruct(const rx::ast::StructExpr &expression){
 
 IRExprResult IRGenerator::generateCall(const rx::ast::CallExpr &expression){
     const auto &model = *context_.model;
-    const SymbolId symbol = model.resolvedSymbols.at(expression.id());
-    const auto &callee = *context_.functions.at(symbol);
+    const auto &call = model.resolvedCalls.at(expression.id());
     std::vector<IRValue> arguments;
     for(const auto &argument : expression.arguments()){
-        const auto result = generateExpr(*argument);
+        const auto result = generateCoercedExpr(*argument);
         if(result.terminated) return result;
-        arguments.push_back(materializeValue(result, model.expressionTypes.at(argument->id())));
+        arguments.push_back(materializeValue(result, call.parameterTypes.at(arguments.size())));
     }
-    return {context_.builder.createCall(callee, std::move(arguments)), false};
+    return emitResolvedCall(call, std::move(arguments));
 }
 
 IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
@@ -291,7 +359,7 @@ std::optional<IRPlace> IRGenerator::generatePlace(const rx::ast::Expr &expressio
 }
 
 IRExprResult IRGenerator::generateAssignment(const rx::ast::AssignExpr &expression){
-    const auto value = generateExpr(expression.value());
+    const auto value = generateCoercedExpr(expression.value());
     if(value.terminated) return value;  //如果生成右侧时已经终结当前基本块，就直接返回，不能继续生成赋值指令 eg. return
 
     const auto place = generatePlace(expression.target());
@@ -306,22 +374,9 @@ std::optional<IRPlace> IRGenerator::generateFieldPlace(const rx::ast::FieldExpr 
     auto &builder = context_.builder;
     const auto &base = expression.base();
 
-    IRPlace place;
-    if(model.expressionInfo.at(base.id()).isPlace){
-        const auto result = generatePlace(base);
-        if(!result) return std::nullopt;
-        place = *result;
-    }else{
-        // 临时值只求值一次，保存后再访问其中的字段。
-        const auto result = generateExpr(base);
-        if(result.terminated) return std::nullopt;
-
-        const TypeId type = model.expressionTypes.at(base.id());
-        const auto value = materializeValue(result, type);
-        const auto address = builder.createEntryAlloca(value.type);
-        builder.createStore(value, address);
-        place = IRPlace{address, type};
-    }
+    const auto result = generatePlaceOrTemporary(base);
+    if(!result) return std::nullopt;
+    IRPlace place = *result;
 
     // place.address 指向存储引用的槽；load 后得到引用指向的地址。
     while(model.types.get(place.type).kind() == TypeKind::Reference){

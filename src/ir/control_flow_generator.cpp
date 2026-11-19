@@ -3,7 +3,7 @@
 #include <stdexcept>
 
 IRExprResult IRGenerator::generateReturn(const rx::ast::ReturnExpr &expression){
-    const auto result = expression.value() ? generateExpr(*expression.value()) : IRExprResult{};
+    const auto result = expression.value() ? generateCoercedExpr(*expression.value()) : IRExprResult{};
     if(!result.terminated) context_.builder.createReturn(result.value);
     return {{}, true};
 }
@@ -77,10 +77,10 @@ IRExprResult IRGenerator::generateIf(const rx::ast::IfExpr &expression){
     };
 
     builder.setInsertPoint(ifBlock);
-    finishBranch(generateBlock(expression.thenBranch()));
+    finishBranch(generateCoercedExpr(expression.thenBranch()));
     if(expression.elseBranch()){
         builder.setInsertPoint(elseBlock);
-        finishBranch(generateExpr(*expression.elseBranch()));
+        finishBranch(generateCoercedExpr(*expression.elseBranch()));
     }
 
     // 两个分支都已终结时不创建合流块，也不再生成 load。
@@ -104,7 +104,7 @@ IRExprResult IRGenerator::generateBreak(const rx::ast::BreakExpr &expression){
         throw std::logic_error("IR break requires an enclosing loop");
     }
 
-    const auto result = expression.value() ? generateExpr(*expression.value()) : IRExprResult{};
+    const auto result = expression.value() ? generateCoercedExpr(*expression.value()) : IRExprResult{};
     if(result.terminated) return result;
 
     auto &builder = context_.builder;

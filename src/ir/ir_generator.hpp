@@ -31,7 +31,6 @@ private:
     IRExprResult generateBlock(const rx::ast::BlockExpr &block); // 语句依次执行；终结后停止；尾表达式的值交给 generateExpr。
 
     // array_generator.cpp：数组构造与索引
-    IRValue materializeArrayElement(const IRExprResult &result, TypeId sourceType, TypeId targetType); //处理解引用等元素类型转化
     IRExprResult generateArray(const rx::ast::ArrayExpr &expression);
     IRExprResult generateRepeatedArray(const rx::ast::ArrayRepeatExpr &expression);
     std::optional<IRPlace> generateIndexPlace(const rx::ast::IndexExpr &expression);
@@ -41,6 +40,13 @@ private:
     // expression_generator
     IRExprResult generateExpr(const rx::ast::Expr &expression);
     IRValue materializeValue(const IRExprResult &result, TypeId type) const; // 存储或传参时，将无值的 unit 结果表示为 {}。
+    // 统一执行语义阶段记录的结果转换。
+    // 只求值一次，再应用该结果位置的模型计划；unit / terminated 仍沿用 IRExprResult。
+    IRExprResult generateCoercedExpr(const rx::ast::Expr &expression);
+    IRExprResult applyCoercion(const IRExprResult &result, const CoercionPlan &plan);
+    // place 直接使用；临时值保存到入口栈槽。用于字段、索引和接收者的地址需求。
+    std::optional<IRPlace> generatePlaceOrTemporary(const rx::ast::Expr &expression);
+    IRPlace applyDereferences(IRPlace place, const std::vector<DereferenceStep> &steps);
     std::optional<IRPlace> generatePlace(const rx::ast::Expr &expression);  //找到存储地址
     std::optional<IRPlace> generateFieldPlace(const rx::ast::FieldExpr &expression); //找到 s.x 的地址
     IRExprResult generatePath(const rx::ast::PathExpr &expression);
@@ -48,6 +54,12 @@ private:
     // 实参按源码顺序求值；方法调用还需按语义签名调整并传入 self。
     IRExprResult generateCall(const rx::ast::CallExpr &expression);
     IRExprResult generateMethodCall(const rx::ast::MethodCallExpr &expression);
+    // 先生成一次接收者并执行选定调整，再依次生成普通实参；self 放在首位。
+    IRExprResult generateReceiver(const rx::ast::Expr &expression, const ReceiverAdjustment &adjustment);
+    // arguments 已全部求值、转换并物化，顺序与完整 parameterTypes 一致。
+    // 普通目标经 context_.functions 发出调用，内建目标按操作种类和 ownerType 分派。
+    IRExprResult emitResolvedCall(const ResolvedCall &call, std::vector<IRValue> arguments);
+    IRExprResult emitBuiltinCall(const ResolvedCall &call, std::vector<IRValue> arguments);
     // 两种赋值均为：右侧 -> 目标地址 -> 读取/更新，目标地址只计算一次。
     IRExprResult generateAssignment(const rx::ast::AssignExpr &expression);
     IRExprResult generateCompoundAssignment(const rx::ast::CompoundAssignExpr &expression);
