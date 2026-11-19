@@ -82,13 +82,13 @@ std::optional<IRPlace> IRGenerator::generateIndexPlace(const rx::ast::IndexExpr 
     }
 
     const auto &info = model.types.get(place.type);
-    if(info.kind() != TypeKind::Array){
-        throw std::runtime_error("IR indexing currently requires a fixed array");
-    }
-
     const auto indexResult = generateExpr(expression.index());
     if(indexResult.terminated) return std::nullopt;
     const auto index = materializeValue(indexResult, model.expressionTypes.at(expression.index().id()));
+    if(info.kind() == TypeKind::Vec){
+        const auto element = context_.typeLowering.lowerStorageType(info.elementType(), model);
+        return IRPlace{vectorElementAddress(element, place.address, index), info.elementType()};
+    }
     const IRType arrayType = context_.typeLowering.lowerStorageType(place.type, model);
     const auto address = builder.createArrayElementAddress(arrayType, place.address, index);
     return IRPlace{address, info.elementType()};

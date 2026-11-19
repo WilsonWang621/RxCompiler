@@ -23,6 +23,8 @@ IRModule IRGenerator::generate(const rx::ast::Crate &crate, const SemanticModel 
     IRModule module;
     context_.reset(module, model);
     try{
+        context_.vectorStorage = &context_.builder.declareStruct("rx.vec", {IRType::Ptr, IRType::I32, IRType::I32});
+        context_.typeLowering.registerVectorStorage(*context_.vectorStorage);
         declareBuiltins();
         for(const auto &item : crate.items()){
             if(const auto *structure = dynamic_cast<const rx::ast::StructItem *>(item.get())){
@@ -35,6 +37,7 @@ IRModule IRGenerator::generate(const rx::ast::Crate &crate, const SemanticModel 
         for(const auto &item : crate.items()){
             generateItem(*item);
         }
+        generateValueHelpers();
         generateMainWrapper();
         context_.clear();
         return module;
@@ -43,3 +46,7 @@ IRModule IRGenerator::generate(const rx::ast::Crate &crate, const SemanticModel 
         throw;
     }
 }
+
+// 这两个实现单元与 IRGenerator 共用同一个翻译单元。
+#include "container_generator.inc"
+#include "value_helpers.inc"

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "generation_context.hpp"
+#include <functional>
 
 class IRGenerator{ //遍历 AST 并直接使用 context_.builder 构造 IR；实现按职责分文件。
 private:
@@ -60,6 +61,18 @@ private:
     // 普通目标经 context_.functions 发出调用，内建目标按操作种类和 ownerType 分派。
     IRExprResult emitResolvedCall(const ResolvedCall &call, std::vector<IRValue> arguments);
     IRExprResult emitBuiltinCall(const ResolvedCall &call, std::vector<IRValue> arguments);
+    IRExprResult generateEquality(const rx::ast::BinaryExpr &expression);
+    IRExprResult emitContainerCall(const ResolvedCall &call, const std::vector<IRValue> &arguments);
+    IRValue allocateElements(IRType element, IRValue count);
+    IRValue elementAddress(IRType element, IRValue base, IRValue index);
+    IRValue vectorField(IRValue address, std::size_t index);
+    IRValue vectorElementAddress(IRType element, IRValue vector, IRValue index);
+    IRValue emptyVector();
+    void forEachElement(IRValue count, const std::function<void(IRValue)> &body);
+    IRFunction &valueHelper(TypeId type, bool clone);
+    void generateValueHelpers();
+    void generateCloneBody(TypeId type, IRValue source);
+    void generateEqualityBody(TypeId type, IRValue left, IRValue right);
     // 两种赋值均为：右侧 -> 目标地址 -> 读取/更新，目标地址只计算一次。
     IRExprResult generateAssignment(const rx::ast::AssignExpr &expression);
     IRExprResult generateCompoundAssignment(const rx::ast::CompoundAssignExpr &expression);

@@ -117,8 +117,10 @@ IRExprResult IRGenerator::emitBuiltinCall(const ResolvedCall &call, std::vector<
     if(!call.target.ownerType.value) return {context_.builder.createCall(*context_.functions.at(call.target.symbol), std::move(arguments)), false};
     if(call.target.builtin == BuiltinOperation::ArrayLen) return {IRValue{IRType::I32, "", context_.model->types.get(call.target.ownerType).length()}, false};
     if(call.target.builtin == BuiltinOperation::Clone && call.returnType == context_.model->types.builtin(TypeKind::Unit)) return {};
-    if(call.target.builtin == BuiltinOperation::Clone) return {context_.builder.createLoad(context_.typeLowering.lowerStorageType(call.returnType, *context_.model), arguments.at(0)), false};
-    throw std::runtime_error("IR container builtin is not implemented yet");
+    if(call.target.builtin == BuiltinOperation::Clone){
+        return {context_.builder.createCall(valueHelper(call.returnType, true), {arguments.at(0)}), false};
+    }
+    return emitContainerCall(call, arguments);
 }
 
 IRExprResult IRGenerator::generateCast(const rx::ast::CastExpr &expression){
@@ -206,6 +208,7 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
     if(op == "||" || op == "&&"){
         return generateLogical(expression);
     }
+    if(op == "==" || op == "!=") return generateEquality(expression);
 
     auto left = generateExpr(expression.left());
     if(left.terminated) return left;
@@ -215,7 +218,6 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
 
     TypeId leftType = model.expressionTypes.at(expression.left().id());
     TypeId rightType = model.expressionTypes.at(expression.right().id());
-    const bool equality = op == "==" || op == "!=";
     const bool ordering = op == "<" || op == "<=" || op == ">" || op == ">=";
 
     // 两侧先求值得到值或引用；引用目标在执行运算时才读取
@@ -230,7 +232,7 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
         else operand.value = context_.builder.createLoad(lowered, *operand.value);
     };
 
-    if(equality || ordering){
+    if(ordering){
         if(ordering){
             const auto &leftReference = model.types.get(leftType);
             const auto &rightReference = model.types.get(rightType);
@@ -249,9 +251,6 @@ IRExprResult IRGenerator::generateBinary(const rx::ast::BinaryExpr &expression){
             loadReference(right, rightType);
         }
         const auto &scalar = model.types.get(leftType);
-        if(equality && scalar.kind() == TypeKind::Unit){
-            return {IRValue{IRType::I1, "", op == "==" ? 1u : 0u}, false};
-        }
         if(!scalar.isInteger() && scalar.kind() != TypeKind::Bool){
             throw std::runtime_error("IR aggregate comparison is not implemented");
         }
@@ -379,16 +378,13 @@ std::optional<IRPlace> IRGenerator::generateFieldPlace(const rx::ast::FieldExpr 
     IRPlace place = *result;
 
     // place.address 指向存储引用的槽；load 后得到引用指向的地址。
-    while(model.types.get(place.type).kind() == TypeKind::Reference){
+    while(model.types.get(place.type).kind() == TypeKind::Reference || model.types.get(place.type).kind() == TypeKind::Box){
         const TypeId elementType = model.types.get(place.type).elementType();
         place.address = builder.createLoad(IRType::Ptr, place.address);
         place.type = elementType;
     }
 
     const auto &owner = model.types.get(place.type);
-    if(owner.kind() == TypeKind::Box){
-        throw std::runtime_error("IR Box field access is not implemented yet");
-    }
     if(owner.kind() != TypeKind::Struct){
         throw std::logic_error("IR field base is not a struct");
     }
@@ -469,7 +465,7 @@ IRExprResult IRGenerator::generateUnary(const rx::ast::UnaryExpr &expression){
         const auto value = generateExpr(operand);
         if(value.terminated) return value;
         const auto stored = materializeValue(value, model.expressionTypes.at(operand.id()));
-        const auto address = context_.builder.createAlloca(stored.type);
+        const auto address = context_.builder.createEntryAlloca(stored.type);
         context_.builder.createStore(stored, address);
         return {address, false};
     }

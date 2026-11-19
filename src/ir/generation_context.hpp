@@ -43,6 +43,12 @@ struct IRGenerationContext{ //真正的核心，拥有builder这样的构建器�
     std::unordered_map<SymbolId, IRStructLayout> structs; //通过SymbolId找结构体
     std::stack<IRLoop> loops;
     SymbolId currentFunction;
+    IRStruct *vectorStorage = nullptr;
+    IRFunction *mallocFunction = nullptr;
+    std::unordered_map<TypeId, IRFunction *> cloneFunctions;
+    std::unordered_map<TypeId, IRFunction *> equalityFunctions;
+    struct ValueHelper{ TypeId type; IRFunction *function; bool clone; };
+    std::vector<ValueHelper> valueHelpers;
 
     void reset(IRModule &module, const SemanticModel &model); //重置+重新绑定 model 和 module
     void clear(); 

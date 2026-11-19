@@ -1,4 +1,5 @@
 #include "module.hpp"
+#include "data_layout.hpp"
 
 #include <algorithm>
 #include <sstream>
@@ -60,24 +61,6 @@ const char *predicateName(IRComparePredicate predicate){
         case IRComparePredicate::Ule: return "ule";
     }
     throw std::logic_error("unknown IR comparison predicate");
-}
-
-std::size_t alignment(const IRType &type){
-    switch(type.kind()){
-        case IRType::I1: case IRType::Unit: return 1;
-        case IRType::I32: case IRType::Ptr: return 4;
-        case IRType::Array: return alignment(type.elementType());
-        case IRType::Struct:{
-            if(!type.structure()) throw std::logic_error("IR struct type has no declaration");
-            std::size_t result = 1;
-            for(const auto &field : type.structure()->fields){
-                result = std::max(result, alignment(field));
-            }
-            return result;
-        }
-        case IRType::Void: throw std::logic_error("void has no storage alignment");
-    }
-    throw std::logic_error("unknown IR type");
 }
 
 void printName(std::ostream &out, const std::string &name, char prefix = '\0'){
@@ -205,19 +188,19 @@ void IRModule::dump(std::ostream &out, int indent) const{
                 }
                 switch(instruction.opcode){
                     case IROpcode::Alloca:
-                        out << "alloca " << typeName(instruction.allocatedType) << ", align " << alignment(instruction.allocatedType);
+                        out << "alloca " << typeName(instruction.allocatedType) << ", align " << storageLayout(instruction.allocatedType).alignment;
                         break;
                     case IROpcode::Load:
                         out << "load " << typeName(instruction.result.value().type) << ", ";
                         printTypedValue(instruction.operands.at(0));
-                        out << ", align " << alignment(instruction.result.value().type);
+                        out << ", align " << storageLayout(instruction.result.value().type).alignment;
                         break;
                     case IROpcode::Store:
                         out << "store ";
                         printTypedValue(instruction.operands.at(0));
                         out << ", ";
                         printTypedValue(instruction.operands.at(1));
-                        out << ", align " << alignment(instruction.operands.at(0).type);
+                        out << ", align " << storageLayout(instruction.operands.at(0).type).alignment;
                         break;
                     case IROpcode::Add: case IROpcode::Sub:
                     case IROpcode::Mul:

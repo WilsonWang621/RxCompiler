@@ -15,5 +15,10 @@ void IRGenerationContext::clear(){
     structs.clear();
     loops = {};
     currentFunction = {};
+    vectorStorage = nullptr;
+    mallocFunction = nullptr;
+    cloneFunctions.clear();
+    equalityFunctions.clear();
+    valueHelpers.clear();
     model = nullptr;
 }

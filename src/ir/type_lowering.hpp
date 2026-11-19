@@ -8,7 +8,9 @@
 class TypeLowering{ //把语义分析阶段的类型，转换成 IR 阶段使用的类型
 private:
     std::unordered_map<SymbolId, const IRStruct *> structs_;
+    const IRStruct *vectorStorage_ = nullptr;
 public:
+    void registerVectorStorage(const IRStruct &structure){ vectorStorage_ = &structure; }
     // 函数返回和控制流结果使用此接口：unit 不产生运行时值。
     IRType lowerType(TypeId type, const SemanticModel &model) const {
         if(model.types.get(type).kind() == TypeKind::Unit) return IRType::Void;
@@ -25,8 +27,11 @@ public:
             case TypeKind::I32: case TypeKind::U32:
             case TypeKind::Isize: case TypeKind::Usize:
                 return IRType::I32;
-            case TypeKind::Reference:
+            case TypeKind::Reference: case TypeKind::Box:
                 return IRType::Ptr;
+            case TypeKind::Vec:
+                if(!vectorStorage_) throw std::logic_error("IR Vec storage is not registered");
+                return IRType::structure(*vectorStorage_);
             case TypeKind::Struct:{
                 const auto found = structs_.find(info.symbol());
                 if(found == structs_.end()) throw std::logic_error("IR struct type is not registered");
@@ -47,5 +52,6 @@ public:
 
     void clear(){
         structs_.clear();
+        vectorStorage_ = nullptr;
     }
 };

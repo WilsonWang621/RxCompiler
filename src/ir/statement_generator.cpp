@@ -27,7 +27,7 @@ void IRGenerator::generateLet(const rx::ast::LetStmt &stmt){
     if(result.terminated) return;
     const SymbolId symbol = context_.model->declaredSymbols.at(stmt.id());
     const auto value = materializeValue(result, context_.model->symbolTypes.at(symbol));
-    const auto address = context_.builder.createAlloca(value.type);
+    const auto address = context_.builder.createEntryAlloca(value.type);
     context_.builder.createStore(value, address);
     context_.locals.emplace(symbol, address);
 }

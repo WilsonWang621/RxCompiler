@@ -55,7 +55,7 @@ IRExprResult IRGenerator::generateIf(const rx::ast::IfExpr &expression){
     const TypeId type = model.expressionTypes.at(expression.id());
     const IRType resultType = model.types.get(type).kind() == TypeKind::Never ? IRType::Void : context_.typeLowering.lowerType(type, model);
     std::optional<IRValue> address;
-    if(resultType != IRType::Void) address = builder.createAlloca(resultType);
+    if(resultType != IRType::Void) address = builder.createEntryAlloca(resultType);
 
     const std::string suffix = std::to_string(basicBlockId++);
     auto &ifBlock = builder.createBlock("if.then." + suffix);
@@ -129,7 +129,7 @@ IRExprResult IRGenerator::generateLoop(const rx::ast::LoopExpr &expression){
     const TypeId type = model.expressionTypes.at(expression.id());
     const IRType resultType = model.types.get(type).kind() == TypeKind::Never ? IRType::Void : context_.typeLowering.lowerType(type, model);
     std::optional<IRValue> address;
-    if(resultType != IRType::Void) address = builder.createAlloca(resultType);
+    if(resultType != IRType::Void) address = builder.createEntryAlloca(resultType);
 
     const std::string suffix = std::to_string(basicBlockId++);
     auto &loopBlock = builder.createBlock("loop.body." + suffix);
