@@ -44,7 +44,9 @@ struct IRGenerationContext{ //真正的核心，拥有builder这样的构建器�
     std::stack<IRLoop> loops;
     SymbolId currentFunction;
     IRStruct *vectorStorage = nullptr;
-    IRFunction *mallocFunction = nullptr;
+    IRFunction *allocateFunction = nullptr;
+    IRFunction *memcpyFunction = nullptr;
+    IRFunction *memmoveFunction = nullptr;
     std::unordered_map<TypeId, IRFunction *> cloneFunctions;
     std::unordered_map<TypeId, IRFunction *> equalityFunctions;
     struct ValueHelper{ TypeId type; IRFunction *function; bool clone; };

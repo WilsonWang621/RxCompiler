@@ -13,7 +13,6 @@ void IRGenerator::declareBuiltins(){
             std::vector<IRParameter> parameters;
             if(!input) parameters.push_back({IRType::I32, "p0"});
             auto &function = context_.builder.declareFunction(info.name, input ? IRType::I32 : IRType::Void, std::move(parameters), false);
-            function.isBuiltin = true;
             context_.functions.emplace(symbol, &function);
             break;
         }

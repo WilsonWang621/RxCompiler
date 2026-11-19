@@ -56,6 +56,5 @@ struct IRFunction{
     std::vector<std::unique_ptr<IRBasicBlock>> blocks; // 首块为入口。
     std::vector<IRParameter> parameters; // self 存在时位于第一个参数。
     bool isDeclaration = false; // 声明没有块；beginFunction 开始生成定义。
-    bool isBuiltin = false; // 内置 I/O 声明在输出时附带运行时定义。
 };
 

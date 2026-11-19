@@ -16,7 +16,9 @@ void IRGenerationContext::clear(){
     loops = {};
     currentFunction = {};
     vectorStorage = nullptr;
-    mallocFunction = nullptr;
+    allocateFunction = nullptr;
+    memcpyFunction = nullptr;
+    memmoveFunction = nullptr;
     cloneFunctions.clear();
     equalityFunctions.clear();
     valueHelpers.clear();

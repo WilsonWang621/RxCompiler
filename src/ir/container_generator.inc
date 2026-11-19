@@ -8,13 +8,36 @@ enum VectorField{VectorData, VectorLength, VectorCapacity};
 
 IRValue IRGenerator::allocateElements(IRType element, IRValue count){
     auto &builder = context_.builder;
-    if(!context_.mallocFunction){
-        context_.mallocFunction = &builder.declareFunction("malloc", IRType::Ptr, {{IRType::I32, "size"}}, false);
+    if(!context_.allocateFunction){
+        context_.allocateFunction = &builder.declareFunction("__rx_alloc", IRType::Ptr,
+            {{IRType::I32, "size"}, {IRType::I32, "alignment"}}, false);
     }
+    const auto bytes = elementByteCount(element, count);
+    return builder.createCall(*context_.allocateFunction, {bytes, word(storageLayout(element).alignment)}).value();
+}
+
+IRValue IRGenerator::elementByteCount(IRType element, IRValue count){
     const auto stride = storageLayout(element).size;
     if(!stride || stride > UINT32_MAX) throw std::runtime_error("invalid IR heap element size");
-    const auto bytes = builder.createBinary(IROpcode::Mul, count, word(static_cast<std::uint32_t>(stride)));
-    return builder.createCall(*context_.mallocFunction, {bytes}).value();
+    return context_.builder.createBinary(IROpcode::Mul, count, word(static_cast<std::uint32_t>(stride)));
+}
+
+void IRGenerator::copyElements(IRType element, IRValue destination, IRValue source, IRValue count, bool mayOverlap){
+    auto &builder = context_.builder;
+    auto *&function = mayOverlap ? context_.memmoveFunction : context_.memcpyFunction;
+    if(!function){
+        function = &builder.declareFunction(mayOverlap ? "memmove" : "memcpy", IRType::Ptr,
+            {{IRType::Ptr, "destination"}, {IRType::Ptr, "source"}, {IRType::I32, "size"}}, false);
+    }
+    // 空 Vec 扩容时旧缓冲区为空指针，不调用 libc。
+    const auto suffix = std::to_string(basicBlockId++);
+    auto &copy = builder.createBlock("vec.copy." + suffix);
+    auto &done = builder.createBlock("vec.copy.done." + suffix);
+    builder.createIf(builder.createCompare(IRComparePredicate::Ne, count, word(0)), copy, done);
+    builder.setInsertPoint(copy);
+    builder.createCall(*function, {destination, source, elementByteCount(element, count)});
+    builder.createBranch(done);
+    builder.setInsertPoint(done);
 }
 
 IRValue IRGenerator::elementAddress(IRType element, IRValue base, IRValue index){
@@ -86,15 +109,12 @@ IRExprResult IRGenerator::emitContainerCall(const ResolvedCall &call, const std:
     if(operation == BuiltinOperation::VecRemove){
         const auto data = builder.createLoad(IRType::Ptr, dataAddress);
         const auto index = arguments.at(1);
-        const auto result = builder.createLoad(element, elementAddress(element, data, index));
+        const auto removed = elementAddress(element, data, index);
+        const auto result = builder.createLoad(element, removed);
         const auto newLength = builder.createBinary(IROpcode::Sub, length, one);
         const auto tail = builder.createBinary(IROpcode::Sub, newLength, index);
-        forEachElement(tail, [&](IRValue offset){
-            const auto to = builder.createBinary(IROpcode::Add, index, offset);
-            const auto from = builder.createBinary(IROpcode::Add, to, one);
-            const auto value = builder.createLoad(element, elementAddress(element, data, from));
-            builder.createStore(value, elementAddress(element, data, to));
-        });
+        const auto next = builder.createBinary(IROpcode::Add, index, one);
+        copyElements(element, removed, elementAddress(element, data, next), tail, true);
         builder.createStore(newLength, lengthAddress);
         return {result, false};
     }
@@ -114,10 +134,7 @@ IRExprResult IRGenerator::emitContainerCall(const ResolvedCall &call, const std:
     const auto newCapacity = builder.createBinary(IROpcode::Add, doubled, initial);
     const auto data = allocateElements(element, newCapacity);
     const auto oldData = builder.createLoad(IRType::Ptr, dataAddress);
-    forEachElement(length, [&](IRValue index){
-        const auto value = builder.createLoad(element, elementAddress(element, oldData, index));
-        builder.createStore(value, elementAddress(element, data, index));
-    });
+    copyElements(element, data, oldData, length, false);
     builder.createStore(data, dataAddress);
     builder.createStore(newCapacity, capacityAddress);
     builder.createBranch(append);

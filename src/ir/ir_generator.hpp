@@ -64,6 +64,8 @@ private:
     IRExprResult generateEquality(const rx::ast::BinaryExpr &expression);
     IRExprResult emitContainerCall(const ResolvedCall &call, const std::vector<IRValue> &arguments);
     IRValue allocateElements(IRType element, IRValue count);
+    IRValue elementByteCount(IRType element, IRValue count);
+    void copyElements(IRType element, IRValue destination, IRValue source, IRValue count, bool mayOverlap);
     IRValue elementAddress(IRType element, IRValue base, IRValue index);
     IRValue vectorField(IRValue address, std::size_t index);
     IRValue vectorElementAddress(IRType element, IRValue vector, IRValue index);
