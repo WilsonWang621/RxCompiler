@@ -2,6 +2,7 @@
 
 #include "ast.hpp"
 #include "type.hpp"
+#include "call_resolution.hpp"
 
 #include <optional>
 
@@ -14,6 +15,16 @@ private:
     bool hasSharedAccess(const rx::ast::Expr &expression) const;
     bool collectBuiltinSignature(TypeId owner, const std::string &name, std::vector<TypeId> &parameters, TypeId &result);
     TypeId checkCallArguments(const std::vector<rx::ast::ExprPtr> &arguments, const std::vector<TypeId> &parameters, TypeId result, const rx::ast::ASTNode &node);
+
+    // 这里只选目标和签名；不按实参、预期结果或可变性筛选方法候选。
+    // resolveMethodCall 的 receiverType 来自已经检查过一次的接收者表达式。
+    std::optional<ResolvedCall> resolveCall(const rx::ast::CallExpr &expression);
+    std::optional<ResolvedCall> resolveMethodCall(const rx::ast::MethodCallExpr &expression, TypeId receiverType);
+    std::optional<CallTarget> resolveBuiltinTarget(SymbolId symbol, TypeId owner);
+    // 选定方法后检查访问路径的可变性；失败时不能回退到其他方法候选。
+    bool checkReceiverAdjustment(const rx::ast::Expr &receiver, const ReceiverAdjustment &adjustment);
+    // 点调用跳过签名首位 self；显式 Type::method 的所有实参均按普通转换检查。
+    TypeId checkCallArguments(const std::vector<rx::ast::ExprPtr> &arguments, const ResolvedCall &call, const rx::ast::ASTNode &node);
 
 public:
     explicit ExpressionCollector(SemanticChecker &checker) : checker_(checker){}

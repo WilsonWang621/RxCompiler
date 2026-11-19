@@ -25,7 +25,7 @@ TypeId ControlFlowCollector::collectIf(const rx::ast::IfExpr &ifstmt, std::optio
     if(thenType == neverType && elseType == neverType) return neverType;
     if(expectedType.has_value()) return *expectedType;
     //LUB
-    return checker_.typesChecker_.collectCommonType({thenType, elseType}, ifstmt);
+    return checker_.typesChecker_.collectCommonExpressionType({{ifstmt.thenBranch().id(), thenType}, {ifstmt.elseBranch()->id(), elseType}}, ifstmt);
 }
 
 TypeId ControlFlowCollector::collectLoop(const rx::ast::LoopExpr &loop, std::optional<TypeId> expectedType){
@@ -50,7 +50,7 @@ TypeId ControlFlowCollector::collectLoop(const rx::ast::LoopExpr &loop, std::opt
     }
 
     // 空集合和全部为 never 的 break 值都得到 never
-    return checker_.typesChecker_.collectCommonType(context.breakTypes, loop);
+    return checker_.typesChecker_.collectCommonExpressionType(context.breakCoercions, loop);
 }
 
 TypeId ControlFlowCollector::collectWhile(const rx::ast::WhileExpr &loop){
@@ -121,6 +121,7 @@ TypeId ControlFlowCollector::collectBreak(const rx::ast::BreakExpr &breakstmt){
     if(valueLoop){
         position = target->breakTypes.size();
         target->breakTypes.push_back(errorType);
+        target->breakCoercions.push_back({0, errorType});
     }
 
     const std::optional<TypeId> expectedType = valueLoop ? target->expectedType : std::nullopt;
@@ -152,7 +153,10 @@ TypeId ControlFlowCollector::collectBreak(const rx::ast::BreakExpr &breakstmt){
         return errorType;
     }
 
-    if(valueLoop) target->breakTypes[position] = valueType;
+    if(valueLoop){
+        target->breakTypes[position] = valueType;
+        target->breakCoercions[position] = {breakstmt.value() ? breakstmt.value()->id() : 0, valueType};
+    }
     return checker_.model_.types.builtin(TypeKind::Never);
 }
 

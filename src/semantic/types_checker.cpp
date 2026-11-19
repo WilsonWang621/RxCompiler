@@ -5,33 +5,60 @@
 #include <unordered_map>
 
 bool TypesChecker::canCoerce(TypeId source, TypeId target) const{
+    return planCoercion(source, target).has_value();
+}
+
+std::optional<CoercionPlan> TypesChecker::planCoercion(TypeId source, TypeId target) const{
     // 判断恒等、never、引用弱化以及规范允许的重复解引用再借用转换是否成立。
     const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
-    if(source == errorType || target == errorType) return false;
-    if(source == target) return true;
+    if(source == errorType || target == errorType) return std::nullopt;
+    CoercionPlan plan;
+    plan.sourceType = source;
+    plan.targetType = target;
 
     const Type *s = &checker_.model_.types.get(source);
     const Type *t = &checker_.model_.types.get(target);
     //Never is always OK!
-    if(s->kind() == TypeKind::Never) return true;
+    if(s->kind() == TypeKind::Never){ plan.kind = CoercionKind::Never; return plan; }
+    if(source == target && (s->kind() != TypeKind::Reference || !s->isMutable())) return plan;
     //both two sides should be reference
-    if(s->kind() != TypeKind::Reference || t->kind() != TypeKind::Reference) return false;
+    if(s->kind() != TypeKind::Reference || t->kind() != TypeKind::Reference) return std::nullopt;
     
-    if(t->isMutable() && !s->isMutable()) return false;
+    if(t->isMutable() && !s->isMutable()) return std::nullopt;
+    plan.kind = CoercionKind::Reference;
+    plan.borrow = t->isMutable() ? BorrowKind::Mutable : BorrowKind::Shared;
 
     // 从源引用的所指类型开始，重复解引用；目标所指类型必须精确匹配。
     source = s->elementType();
     while(true){
-        if(source == t->elementType()) return true;
+        if(source == t->elementType()) return plan;
         s = &checker_.model_.types.get(source);
         if(s->kind() == TypeKind::Reference){
             // 共享引用会阻断可变再借用，即使后面还有可变引用。
-            if(t->isMutable() && !s->isMutable()) return false;
+            if(t->isMutable() && !s->isMutable()) return std::nullopt;
         }else if(s->kind() != TypeKind::Box){
-            return false;
+            return std::nullopt;
         }
+        plan.dereferences.push_back({s->kind() == TypeKind::Box ? DereferenceKind::Box : DereferenceKind::Reference, source, s->elementType()});
         source = s->elementType();
     }
+}
+
+bool TypesChecker::recordCoercion(const CoercionInput &input, TypeId target){
+    const auto plan = planCoercion(input.sourceType, target);
+    if(!plan) return false;
+    if(input.expression) checker_.model_.coercions.insert_or_assign(input.expression, *plan);
+    return true;
+}
+
+TypeId TypesChecker::collectCommonExpressionType(const std::vector<CoercionInput> &inputs, const rx::ast::ASTNode &node){
+    std::vector<TypeId> types;
+    for(const auto &input : inputs) types.push_back(input.sourceType);
+    const TypeId target = collectCommonType(types, node);
+    if(target != checker_.model_.types.builtin(TypeKind::Error)){
+        for(const auto &input : inputs) recordCoercion(input, target);
+    }
+    return target;
 }
 
 bool TypesChecker::canCast(TypeId source, TypeId target) const{

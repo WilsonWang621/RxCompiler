@@ -161,6 +161,8 @@ TypeId StatementCollector::collectBlockContents(const rx::ast::BlockExpr &body, 
         result = errorType;
     }
     if(!valid) result = errorType;
+    // 尾表达式已执行预期类型转换，块自身不再重复转换该引用路径。
+    if(result != errorType && result != neverType && expectedType.has_value()) result = *expectedType;
 
     checker_.model_.expressionTypes.insert_or_assign(body.id(), result);
     checker_.model_.expressionInfo.insert_or_assign(body.id(), ExprInfo{false, false});

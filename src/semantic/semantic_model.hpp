@@ -2,6 +2,7 @@
 
 #include <ast.hpp>
 #include "declaration_table.hpp"
+#include "call_resolution.hpp"
 #include "symbol.hpp"
 #include "type.hpp"
 
@@ -53,6 +54,14 @@ struct SemanticModel{
 
     // 表达式是否为 place、是否可变等属性
     std::unordered_map<rx::ast::NodeId, ExprInfo> expressionInfo;
+
+    // CallExpr / MethodCallExpr 节点 -> 已选定目标、完整签名和接收者调整。
+    // 仅在调用检查成功后登记；IR 不再根据方法名重新执行查找。
+    std::unordered_map<rx::ast::NodeId, ResolvedCall> resolvedCalls;
+
+    // 实际 coercion 位置的表达式节点 -> 转换计划，不覆盖 expressionTypes。
+    // block / if / loop 传播目标时在实际结果处记录，避免包装节点重复解引用。
+    std::unordered_map<rx::ast::NodeId, CoercionPlan> coercions;
 
     std::vector<Diagnosis> diagnostics;
 };

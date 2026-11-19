@@ -2,6 +2,7 @@
 
 #include "ast.hpp"
 #include "type.hpp"
+#include "type_adjustment.hpp"
 
 #include <optional>
 
@@ -19,6 +20,8 @@ private:
         std::optional<TypeId> expectedType;
         std::vector<TypeId> breakTypes;
         bool valid = true;
+        // 与 breakTypes 同序，只收集当前循环的 break；bare break 使用节点 0。
+        std::vector<CoercionInput> breakCoercions = {};
     };
 
     LoopContext *currentLoop_ = nullptr;

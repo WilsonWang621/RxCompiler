@@ -79,6 +79,7 @@ TypeId ExpressionCollector::collectExpr(const rx::ast::Expr &expression, std::op
         }
     }
 
+    if(result != errorType && expectedType.has_value()) checker_.typesChecker_.recordCoercion({expression.id(), result}, *expectedType);
     checker_.model_.expressionTypes.insert_or_assign(expression.id(), result);
     if(result == errorType){
         checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
@@ -397,7 +398,9 @@ TypeId ExpressionCollector::collectArray(const rx::ast::ArrayExpr &array, std::o
     }
 
     // 有预期类型时采用转换目标；否则在各元素独立定型后计算 LUB。
-    const TypeId elementType = expectedElement.has_value() ? *expectedElement : checker_.typesChecker_.collectCommonType(elements, array);
+    std::vector<CoercionInput> inputs;
+    for(std::size_t index = 0; index < elements.size(); ++index) inputs.push_back({array.elements()[index]->id(), elements[index]});
+    const TypeId elementType = expectedElement.has_value() ? *expectedElement : checker_.typesChecker_.collectCommonExpressionType(inputs, array);
     if(elementType == errorType) return errorType;
     return checker_.model_.types.array(elementType, length);
 }
@@ -565,25 +568,27 @@ TypeId ExpressionCollector::collectField(const rx::ast::FieldExpr &expression){
     return errorType;
 }
 
-TypeId ExpressionCollector::collectCall(const rx::ast::CallExpr &expression){
+std::optional<ResolvedCall> ExpressionCollector::resolveCall(const rx::ast::CallExpr &expression){
     // 限定路径调用使用普通参数转换，接收者作为第一个显式参数。
     const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
     checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
     TypeId result = errorType;
     std::vector<TypeId> parameters;
+    std::optional<CallTarget> target;
     if(const auto *path = dynamic_cast<const rx::ast::PathExpr *>(&expression.callee())){
         const auto symbol = checker_.resolution_.resolveValuePath(*path);
         if(symbol.has_value()){
             const auto &info = checker_.model_.symbols.at(*symbol);
             checker_.model_.resolvedSymbols.insert_or_assign(expression.id(), *symbol);
+            const TypeId owner = path->segments().size() == 2 ? checker_.model_.resolvedTypes.at(path->segments().front()->id()) : TypeId{};
             if(info.kind == SymbolKind::Function){
+                target = CallTarget{*symbol, BuiltinOperation::None, owner};
                 const auto &function = checker_.model_.declarations.functions.at(*symbol);
                 if(function.receiverType.has_value()) parameters.push_back(*function.receiverType);
                 parameters.insert(parameters.end(), function.parameterTypes.begin(), function.parameterTypes.end());
                 result = function.returnType;
             }else if(info.kind == SymbolKind::Builtin){
-                const TypeId owner = path->segments().size() == 2 ?
-                                     checker_.model_.resolvedTypes.at(path->segments().front()->id()) : TypeId{};
+                target = resolveBuiltinTarget(*symbol, owner);
                 if(!collectBuiltinSignature(owner, info.name, parameters, result)){
                     checker_.diagnose(expression, "builtin operation is not available for this type");
                 }
@@ -596,24 +601,22 @@ TypeId ExpressionCollector::collectCall(const rx::ast::CallExpr &expression){
             checker_.diagnose(expression.callee(), "call target must be a function path");
         }
     }
-    return checkCallArguments(expression.arguments(), parameters, result, expression);
+    if(!target || result == errorType) return std::nullopt;
+    return ResolvedCall{*target, parameters, result, std::nullopt};
 }
 
-TypeId ExpressionCollector::collectMethodCall(const rx::ast::MethodCallExpr &expression){
+std::optional<ResolvedCall> ExpressionCollector::resolveMethodCall(const rx::ast::MethodCallExpr &expression, TypeId receiverType){
     // 按 T、&T、&mut T 的顺序检查每一层解引用后的候选。
     const TypeId errorType = checker_.model_.types.builtin(TypeKind::Error);
     checker_.model_.expressionInfo.insert_or_assign(expression.id(), ExprInfo{false, false});
     const auto &method = expression.method();
     bool valid = !method.hasGenericArgs() || method.genericArgs()->empty();
     if(!valid) checker_.diagnose(method, "method takes no concrete type arguments");
-    TypeId type = collectExpr(expression.receiver());
+    TypeId type = receiverType;
     std::vector<TypeId> parameters;
-    if(type == errorType){
-        return checkCallArguments(expression.arguments(), parameters, type, expression);
-    }
-    const auto &receiver = checker_.model_.expressionInfo.at(expression.receiver().id());
-    bool sharedAccess = hasSharedAccess(expression.receiver());
-    bool isMutable = (!receiver.isPlace || receiver.mut) && !sharedAccess;
+    if(type == errorType || !valid) return std::nullopt;
+    ReceiverAdjustment plan;
+    plan.sourceType = type;
     while(true){
         for(int adjustment = 0; adjustment < 3; ++adjustment){
             const TypeId candidate = adjustment == 0 ? type : checker_.model_.types.reference(type, adjustment == 2);
@@ -653,27 +656,88 @@ TypeId ExpressionCollector::collectMethodCall(const rx::ast::MethodCallExpr &exp
             }
             if(!found) continue;
             // 先选定方法，再检查可变访问和参数，失败时不继续搜索后续候选。
-            if(candidateInfo.kind() == TypeKind::Reference && candidateInfo.isMutable() &&
-               (sharedAccess || (adjustment != 0 && !isMutable))){
-                checker_.diagnose(expression.receiver(), "method requires mutable access to its receiver");
-                valid = false;
-            }
             checker_.model_.resolvedSymbols.insert_or_assign(method.id(), symbol);
             checker_.model_.resolvedSymbols.insert_or_assign(expression.id(), symbol);
             checker_.model_.resolvedTypes.insert_or_assign(method.id(), owner);
-            const TypeId checked = checkCallArguments(expression.arguments(), parameters, result, expression);
-            return valid ? checked : errorType;
+            plan.targetType = candidate;
+            plan.borrow = adjustment == 0 ? BorrowKind::None : (adjustment == 1 ? BorrowKind::Shared : BorrowKind::Mutable);
+            plan.reborrow = adjustment == 0 && candidateInfo.kind() == TypeKind::Reference && candidateInfo.isMutable();
+            parameters.insert(parameters.begin(), candidate);
+            const auto target = checker_.model_.symbols.at(symbol).kind == SymbolKind::Builtin ? resolveBuiltinTarget(symbol, owner) : std::optional<CallTarget>{CallTarget{symbol, BuiltinOperation::None, owner}};
+            if(!target) return std::nullopt;
+            return ResolvedCall{*target, parameters, result, plan};
         }
         const auto &owner = checker_.model_.types.get(type);
         if(owner.kind() != TypeKind::Reference && owner.kind() != TypeKind::Box) break;
-        if(owner.kind() == TypeKind::Reference){
-            if(!owner.isMutable()) sharedAccess = true;
-            isMutable = owner.isMutable() && !sharedAccess;
-        }
+        plan.dereferences.push_back({owner.kind() == TypeKind::Box ? DereferenceKind::Box : DereferenceKind::Reference, type, owner.elementType()});
         type = owner.elementType();
     }
     checker_.diagnose(method, "no matching method '" + method.name() + "'");
-    return checkCallArguments(expression.arguments(), parameters, errorType, expression);
+    return std::nullopt;
+}
+
+TypeId ExpressionCollector::collectCall(const rx::ast::CallExpr &expression){
+    const auto call = resolveCall(expression);
+    if(!call) return checkCallArguments(expression.arguments(), {}, checker_.model_.types.builtin(TypeKind::Error), expression);
+    const TypeId result = checkCallArguments(expression.arguments(), *call, expression);
+    if(result != checker_.model_.types.builtin(TypeKind::Error)) checker_.model_.resolvedCalls.insert_or_assign(expression.id(), *call);
+    return result;
+}
+
+TypeId ExpressionCollector::collectMethodCall(const rx::ast::MethodCallExpr &expression){
+    const TypeId receiverType = collectExpr(expression.receiver());
+    const auto call = resolveMethodCall(expression, receiverType);
+    if(!call) return checkCallArguments(expression.arguments(), {}, checker_.model_.types.builtin(TypeKind::Error), expression);
+    const bool valid = checkReceiverAdjustment(expression.receiver(), *call->receiver);
+    const TypeId result = checkCallArguments(expression.arguments(), *call, expression);
+    if(!valid) return checker_.model_.types.builtin(TypeKind::Error);
+    if(result != checker_.model_.types.builtin(TypeKind::Error)) checker_.model_.resolvedCalls.insert_or_assign(expression.id(), *call);
+    return result;
+}
+
+bool ExpressionCollector::checkReceiverAdjustment(const rx::ast::Expr &receiver, const ReceiverAdjustment &adjustment){
+    const auto &info = checker_.model_.expressionInfo.at(receiver.id());
+    bool shared = hasSharedAccess(receiver);
+    bool mut = (!info.isPlace || info.mut) && !shared;
+    for(const auto &step : adjustment.dereferences){
+        const auto &type = checker_.model_.types.get(step.sourceType);
+        if(type.kind() == TypeKind::Reference){ shared = shared || !type.isMutable(); mut = type.isMutable() && !shared; }
+    }
+    const auto &target = checker_.model_.types.get(adjustment.targetType);
+    if(target.kind() == TypeKind::Reference && target.isMutable() && (shared || (adjustment.borrow != BorrowKind::None && !mut))){
+        checker_.diagnose(receiver, "method requires mutable access to its receiver");
+        return false;
+    }
+    return true;
+}
+
+TypeId ExpressionCollector::checkCallArguments(const std::vector<rx::ast::ExprPtr> &arguments, const ResolvedCall &call, const rx::ast::ASTNode &node){
+    const auto begin = call.parameterTypes.begin() + (call.receiver.has_value() ? 1 : 0);
+    return checkCallArguments(arguments, std::vector<TypeId>(begin, call.parameterTypes.end()), call.returnType, node);
+}
+
+std::optional<CallTarget> ExpressionCollector::resolveBuiltinTarget(SymbolId symbol, TypeId owner){
+    const auto &name = checker_.model_.symbols.at(symbol).name;
+    BuiltinOperation operation = BuiltinOperation::None;
+    if(!owner.value){
+        if(name == "get_i32") operation = BuiltinOperation::GetI32;
+        if(name == "print_i32") operation = BuiltinOperation::PrintI32;
+        if(name == "println_i32") operation = BuiltinOperation::PrintlnI32;
+    }else{
+        const auto kind = checker_.model_.types.get(owner).kind();
+        if(name == "clone") operation = BuiltinOperation::Clone;
+        if(kind == TypeKind::Array && name == "len") operation = BuiltinOperation::ArrayLen;
+        if(kind == TypeKind::Box && name == "new") operation = BuiltinOperation::BoxNew;
+        if(kind == TypeKind::Vec){
+            if(name == "new") operation = BuiltinOperation::VecNew;
+            if(name == "len") operation = BuiltinOperation::VecLen;
+            if(name == "is_empty") operation = BuiltinOperation::VecIsEmpty;
+            if(name == "push") operation = BuiltinOperation::VecPush;
+            if(name == "remove") operation = BuiltinOperation::VecRemove;
+        }
+    }
+    if(operation == BuiltinOperation::None) return std::nullopt;
+    return CallTarget{symbol, operation, owner};
 }
 
 TypeId ExpressionCollector::checkCallArguments(const std::vector<rx::ast::ExprPtr> &arguments, const std::vector<TypeId> &parameters, TypeId result, const rx::ast::ASTNode &node){
