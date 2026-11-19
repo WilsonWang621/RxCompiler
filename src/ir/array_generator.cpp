@@ -52,25 +52,26 @@ IRExprResult IRGenerator::generateArray(const rx::ast::ArrayExpr &expression){
 }
 
 IRExprResult IRGenerator::generateRepeatedArray(const rx::ast::ArrayRepeatExpr &expression){
+    //从语义模型取得类型和长度
     const auto &model = *context_.model;
     auto &builder = context_.builder;
     const TypeId type = model.expressionTypes.at(expression.id());
     const auto &info = model.types.get(type);
     if(info.kind() != TypeKind::Array) throw std::logic_error("IR repetition requires an array type");
-
+    //生成一次元素表达式
     const auto result = generateExpr(expression.value());
     if(result.terminated) return result;
-
+    //分配数组和循环计数器
     const auto value = materializeArrayElement(result, model.expressionTypes.at(expression.value().id()), info.elementType());
     const IRType arrayType = context_.typeLowering.lowerStorageType(type, model);
     const auto address = builder.createEntryAlloca(arrayType);
     const auto indexAddress = builder.createEntryAlloca(IRType::I32);
     builder.createStore(IRValue{IRType::I32, "", 0}, indexAddress);
-
+    //生三个基本块
     const std::string suffix = std::to_string(basicBlockId++);
-    auto &conditionBlock = builder.createBlock("array.repeat.cond." + suffix);
-    auto &bodyBlock = builder.createBlock("array.repeat.body." + suffix);
-    auto &exitBlock = builder.createBlock("array.repeat.end." + suffix);
+    auto &conditionBlock = builder.createBlock("array.repeat.cond." + suffix); //读取下标，判断index < N
+    auto &bodyBlock = builder.createBlock("array.repeat.body." + suffix); //写当前元素，下标+1 跳回condition
+    auto &exitBlock = builder.createBlock("array.repeat.end." + suffix); //初始化结束，取得结果
     builder.createBranch(conditionBlock);
 
     builder.setInsertPoint(conditionBlock);
