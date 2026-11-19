@@ -24,7 +24,7 @@ struct Diagnosis{
 };
 
 struct SemanticModel{
-    // 拥有本次检查产生的类型；所有 TypeId 均相对于此表。
+    // 拥有本次检查产生的类型；可以typeId 和 type互查。
     TypeTable types;
 
      // 第一次扫描产生的声明表
