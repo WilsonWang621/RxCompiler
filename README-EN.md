@@ -11,8 +11,7 @@ A [Rx language](https://acmclasscourse-2025.github.io/rx-compiler-specification/
 - Separate value/type namespaces, name binding stacks, scope-exit restoration and `ScopeGuard` are implemented, alongside symbol information, declaration indexes and semantic result tables.
 - The first `SemanticChecker` scan collects top-level declarations and associated items; the second resolves declaration types, checks function bodies and evaluates constants.
 - `--stage ast` builds and prints the AST; `--stage semantic` additionally checks semantics and exits with code 1 on diagnostics.
-- `--stage ir` connects the frontend and semantic model to LLVM IR output. It supports scalar expressions, references, ordinary function calls, `if`, `while`, `loop`, `return`, `break value` and `continue`.
-- Short-circuit `&&`/`||`, arrays, struct construction and field access, method calls, `Box`/`Vec` and unit parameters remain unsupported in IR. Struct declarations have partial layout support; this does not imply support for struct values.
+- `--stage ir` generates LLVM IR for scalars, short-circuit operators, control flow, references and coercions, arrays, structs, functions and methods, including unit parameters. It also lowers `Box<T>`, `Vec<T>`, deep cloning and structural equality.
 - `--stage codegen` retains its CLI entrypoint but reports that code generation is not implemented and exits with code 2. Optimization is also not implemented.
 
 Semantic and IR tests run separately; passing semantic checks does not imply that the corresponding feature supports IR generation.
@@ -27,6 +26,7 @@ src/
   frontend/         ANTLR parse-tree to AST conversion
   semantic/         Symbols, scopes, declaration collection and results
   ir/               IR model, builder, type lowering and AST-to-IR generation
+  runtime/          C runtime for integer I/O and heap allocation
 grammar/            ANTLR lexer and parser definitions
 generated/          Generated ANTLR C++ sources
 scripts/            Build, parser generation and test runner
@@ -43,7 +43,7 @@ Only the official testcase submodule `tests/official/` is tracked under `tests/`
 
 ## Building and running
 
-Building requires a C++17 compiler, CMake, Make, curl and `sha256sum`. The test runner requires Python 3. Rust, Clang 22 and REIMU are not needed for the current frontend build or tests.
+Building requires a C++17 compiler, CMake, Make, curl and `sha256sum`. The test runner requires Python 3. The compiler build and semantic tests do not require Clang 22 or REIMU.
 
 Run from the project root:
 
@@ -59,7 +59,7 @@ make build BUILD_JOBS=4
 
 `scripts/build.sh` builds in Release mode using `target/build` and writes the executable to `target/compiler`. If the ANTLR C++ runtime 4.13.2 archive is missing from `.antlr/`, the script downloads it and verifies its SHA-256 checksum.
 
-Run `make build` after source updates before invoking `target/compiler` directly. Test commands build automatically unless `BUILD=` is supplied to reuse an existing executable.
+Run `make build` after source updates before invoking `target/compiler` directly. Tests build the compiler by default. Use `BUILD=` to reuse it for semantic tests, or `BUILD='$(RUNTIME_BUILD)'` to reuse it while preparing the runtime for IR tests.
 
 `--dump-tree` prints the ANTLR parse tree before the AST. Syntax errors exit with code 1. Invalid arguments, unreadable input files, AST construction exceptions and unimplemented stages exit with code 2.
 
@@ -107,7 +107,8 @@ The root `Makefile` provides the common entrypoint. `config.mk` defines the comp
 | --- | --- |
 | `COMPILER` | Defaults to `./target/compiler`; override to select another executable. |
 | `BUILD_COMPILER` | Defaults to `./scripts/build.sh`; used by `make build` and test builds. |
-| `BUILD` | Builds the C++ compiler once and leaves an empty `{runtime}` file. |
+| `BUILD` | Builds the C++ compiler and prepares `{runtime}` for execution stages. |
+| `RUNTIME_BUILD` | Cross-compiles `src/runtime/runtime.c` to RV32IM/ILP32 assembly with `CLANG`. |
 | `SEMANTIC` | Parses, resolves names and checks types without generating IR. |
 | `IR` | `$(COMPILER) --stage ir {source} -o {output}` emits LLVM IR. |
 | `CODEGEN` | Invokes the custom compiler's codegen entrypoint, which currently reports that it is not implemented. |
@@ -143,25 +144,25 @@ c++ -std=c++17 -Wall -Wextra -Wpedantic -Isrc/ast \
 ./target/tests/unit/scope_test
 ```
 
-Set `STAGE` explicitly to `semantic`, `ir`, `codegen` or `optimization`; `STAGE=` selects all stages. IR is configured; unsupported IR features report generation failures. Codegen/optimization cannot pass yet. The template's Rust reference helpers remain in `crates/rx`, but default test commands now use the custom compiler.
+Set `STAGE` to `semantic`, `ir`, `codegen` or `optimization`. An empty `STAGE=` selects all stages. The custom RV32IM code generator is still pending, so use `STAGE=ir` to validate generated code through Clang and REIMU.
 
-## Incremental IR validation
+## IR validation
 
 ```sh
 make test STAGE=ir FILTER=official:codegen:builtin-io # Official I/O smoke tests
 make test-ir-control-flow                  # Official if/while/loop regressions
 make test STAGE=ir FILTER=ir                # Optional local scalar fixtures
-make test STAGE=ir                          # All IR cases, including unsupported features
+make test STAGE=ir FILTER=official:codegen  # All official IR cases
 ```
 
-The runner derives IR cases from manifest entries with `stage: codegen`; official manifests need no changes. `make test-ir-control-flow` selects `official:codegen:blocks-if-and-never` and `official:codegen:loops-and-jumps`, exercising branch results, early returns, repeated conditions, nested loops, break values and continue targets through the semantic, IR, Clang and REIMU pipeline. `COMPILER`, `RUN`, timeouts and `BUILD=` overrides also apply to this target. Other official suites may still require unsupported features; for example, `loop-state-merges` currently needs short-circuit `||`.
+The runner derives IR cases from manifest entries with `stage: codegen`. `make test-ir-control-flow` selects the official branch and loop suites, exercising early returns, repeated conditions, break values and continue targets. The same compiler, runtime and timeout overrides apply to this target.
 
 Each IR case runs these checks in order. A failure stops that case while other cases continue:
 
 | Logs / artifacts | Failure location |
 | --- | --- |
 | `semantic.*` | Independent semantic check: the frontend rejected the case. |
-| `compile.*`, `program.ll` | IR generation after semantic success, including unsupported features. |
+| `compile.*`, `program.ll` | IR generation diagnostics and emitted LLVM IR. |
 | `clang.*`, `program.s` | Clang parsing, verification and RV32IM lowering: inspect IR syntax, types or target compilation. |
 | `run-N.*` | REIMU execution failure, timeout or output mismatch. |
 
@@ -179,7 +180,7 @@ xmake -y -P vendor/REIMU
 
 Rebuild after updating REIMU. IR tests additionally require Clang 22, with `CLANG=clang-22` by default. The IR command must write `.ll`, which the runner lowers to RV32IM assembly. Codegen must write RV32IM assembly directly. Both paths then invoke `RUN`.
 
-REIMU starts at the global `main` symbol. The `{stdout}` and `{profile}` placeholders in `RUN` save program output and cycle statistics. Write shared runtime assembly to `{runtime}` during `BUILD`; exported functions must follow the ILP32 calling convention. Keep `-p {profile}` and avoid `--silent` when collecting cycles.
+The compiler lowers type-specific operations into LLVM IR. `src/runtime/runtime.c` provides the ILP32 implementations of integer I/O and `__rx_alloc`. LLVM IR declares these functions and calls REIMU's `memcpy` and `memmove` for bulk memory operations. The runner links the program assembly with the runtime assembly written to `{runtime}` during `BUILD`. REIMU starts at the global `main` symbol and saves output and cycle statistics through `{stdout}` and `{profile}`.
 
 ## CI/CD
 
@@ -187,4 +188,4 @@ The GitHub Actions workflow at `.github/workflows/test.yml` checks out the offic
 
 Include the corresponding GitHub Actions run link with each code review and ensure that `Build compiler` passes. Configure that check as required in the GitHub branch protection rules.
 
-CI runs the compiler build, all semantic tests, the official I/O smoke tests (`FILTER=official:codegen:builtin-io`) and `make test-ir-control-flow`, installing Clang 22 and xmake and building REIMU. It depends only on official fixtures. The control-flow step has a separate outcome and log in the summary and artifacts. Semantic, IR, control-flow and REIMU build logs and per-case artifacts are retained for 90 days. The full official IR suite is available locally as implementation progresses. Local verification for this update is recorded in `ci/validation.md`; it is separate from a remote GitHub Actions run.
+After building the compiler, CI runs the full official semantic suite, sets up Clang 22 and REIMU, then runs the full official IR suite. The IR step reuses the C++ compiler and builds the separate runtime. The Actions summary and artifacts contain the IR outcome, test logs and per-case output.
